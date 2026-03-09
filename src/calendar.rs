@@ -162,3 +162,221 @@ pub fn events_by_day(events: &[CalEvent]) -> HashMap<NaiveDate, Vec<usize>> {
     }
     map
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── strip_html ───────────────────────────────────────────────────────
+
+    #[test]
+    fn strip_html_removes_tags() {
+        assert_eq!(strip_html("<b>bold</b> text"), "bold text");
+    }
+
+    #[test]
+    fn strip_html_decodes_entities() {
+        assert_eq!(strip_html("a &amp; b &lt; c &gt; d"), "a & b < c > d");
+        assert_eq!(strip_html("&quot;hi&quot;"), "\"hi\"");
+        assert_eq!(strip_html("it&#39;s &apos;fine&apos;"), "it's 'fine'");
+        assert_eq!(strip_html("no&nbsp;break"), "no break");
+    }
+
+    #[test]
+    fn strip_html_collapses_blank_lines() {
+        let input = "line1\n\n\n\nline2\n\n\nline3";
+        let result = strip_html(input);
+        assert_eq!(result, "line1\n\nline2\n\nline3");
+    }
+
+    #[test]
+    fn strip_html_trims_result() {
+        assert_eq!(strip_html("  hello  "), "hello");
+    }
+
+    #[test]
+    fn strip_html_nested_tags() {
+        assert_eq!(strip_html("<div><p>nested</p></div>"), "nested");
+    }
+
+    // ── extract_links ────────────────────────────────────────────────────
+
+    #[test]
+    fn extract_links_finds_urls() {
+        let text = "Visit https://example.com for info";
+        assert_eq!(extract_links(text), vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn extract_links_http_and_https() {
+        let text = "http://a.com and https://b.com";
+        assert_eq!(
+            extract_links(text),
+            vec!["http://a.com", "https://b.com"]
+        );
+    }
+
+    #[test]
+    fn extract_links_trims_trailing_punctuation() {
+        let text = "See https://example.com/page.";
+        assert_eq!(extract_links(text), vec!["https://example.com/page"]);
+    }
+
+    #[test]
+    fn extract_links_stops_at_delimiters() {
+        let text = "link: <https://example.com> done";
+        assert_eq!(extract_links(text), vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn extract_links_deduplicates() {
+        let text = "https://a.com https://a.com";
+        assert_eq!(extract_links(text), vec!["https://a.com"]);
+    }
+
+    #[test]
+    fn extract_links_empty_input() {
+        assert!(extract_links("").is_empty());
+        assert!(extract_links("no links here").is_empty());
+    }
+
+    // ── parse_ics ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_ics_basic_event() {
+        let ics = "\
+BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+SUMMARY:Test Event\r
+DTSTART;VALUE=DATE:20250315\r
+DTEND;VALUE=DATE:20250316\r
+END:VEVENT\r
+END:VCALENDAR";
+        let events = parse_ics(ics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].summary, "Test Event");
+        assert_eq!(events[0].start, NaiveDate::from_ymd_opt(2025, 3, 15).unwrap());
+        assert!(events[0].start_time.is_none());
+    }
+
+    #[test]
+    fn parse_ics_with_description_and_location() {
+        let ics = "\
+BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+SUMMARY:Meeting\r
+DTSTART;VALUE=DATE:20250401\r
+DTEND;VALUE=DATE:20250402\r
+DESCRIPTION:<b>Important</b> meeting &amp; notes\r
+LOCATION:Room 42\r
+END:VEVENT\r
+END:VCALENDAR";
+        let events = parse_ics(ics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].description.as_deref(), Some("Important meeting & notes"));
+        assert_eq!(events[0].location.as_deref(), Some("Room 42"));
+    }
+
+    #[test]
+    fn parse_ics_deduplicates() {
+        let ics = "\
+BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+SUMMARY:Dup\r
+DTSTART;VALUE=DATE:20250401\r
+DTEND;VALUE=DATE:20250402\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+SUMMARY:Dup\r
+DTSTART;VALUE=DATE:20250401\r
+DTEND;VALUE=DATE:20250402\r
+END:VEVENT\r
+END:VCALENDAR";
+        assert_eq!(parse_ics(ics).len(), 1);
+    }
+
+    #[test]
+    fn parse_ics_empty_input() {
+        assert!(parse_ics("").is_empty());
+    }
+
+    #[test]
+    fn parse_ics_no_title() {
+        let ics = "\
+BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+DTSTART;VALUE=DATE:20250501\r
+DTEND;VALUE=DATE:20250502\r
+END:VEVENT\r
+END:VCALENDAR";
+        let events = parse_ics(ics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].summary, "(no title)");
+    }
+
+    // ── events_by_day ────────────────────────────────────────────────────
+
+    #[test]
+    fn events_by_day_single_day() {
+        let events = vec![CalEvent {
+            summary: "A".into(),
+            start: NaiveDate::from_ymd_opt(2025, 3, 10).unwrap(),
+            start_time: None,
+            end: NaiveDate::from_ymd_opt(2025, 3, 11).unwrap(),
+            end_time: None,
+            description: None,
+            location: None,
+        }];
+        let map = events_by_day(&events);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&NaiveDate::from_ymd_opt(2025, 3, 10).unwrap()));
+    }
+
+    #[test]
+    fn events_by_day_multi_day_span() {
+        let events = vec![CalEvent {
+            summary: "Trip".into(),
+            start: NaiveDate::from_ymd_opt(2025, 3, 10).unwrap(),
+            start_time: None,
+            end: NaiveDate::from_ymd_opt(2025, 3, 13).unwrap(),
+            end_time: None,
+            description: None,
+            location: None,
+        }];
+        let map = events_by_day(&events);
+        assert_eq!(map.len(), 3); // 10, 11, 12 (end is exclusive)
+        for day in 10..=12 {
+            assert!(map.contains_key(&NaiveDate::from_ymd_opt(2025, 3, day).unwrap()));
+        }
+    }
+
+    #[test]
+    fn events_by_day_sorts_allday_before_timed() {
+        let t = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+        let date = NaiveDate::from_ymd_opt(2025, 3, 10).unwrap();
+        let events = vec![
+            CalEvent {
+                summary: "Timed".into(),
+                start: date,
+                start_time: Some(t),
+                end: date + Duration::days(1),
+                end_time: None,
+                description: None,
+                location: None,
+            },
+            CalEvent {
+                summary: "AllDay".into(),
+                start: date,
+                start_time: None,
+                end: date + Duration::days(1),
+                end_time: None,
+                description: None,
+                location: None,
+            },
+        ];
+        let map = events_by_day(&events);
+        let indices = &map[&date];
+        // All-day (index 1) should come before timed (index 0)
+        assert_eq!(indices, &[1, 0]);
+    }
+}

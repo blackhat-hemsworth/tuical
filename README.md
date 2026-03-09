@@ -79,27 +79,37 @@ You can also set the URL at runtime with the `r` key — it will be saved to the
 
 ---
 
-## Codebase walkthrough
+## Project structure
 
-**`src/main.rs`** is the entire application, organized into six clearly marked sections:
+```
+src/
+  main.rs       Entry point, terminal setup, event loop, key dispatch
+  app.rs        App state, ViewMode, InputMode, PopupState, state transitions
+  calendar.rs   CalEvent struct, ICS fetching/parsing, HTML stripping, link extraction
+  config.rs     Config struct, XDG path resolution, TOML load/save
+  ui.rs         Theme/layout constants, all rendering (month, week, popup, event pane)
+```
 
-**Config** (`// ── Config ──`) — `Config` struct (serde-backed), path resolution respecting `$XDG_CONFIG_HOME`, and `load_config`/`save_config` helpers.
+### `config.rs`
+`Config` struct (serde-backed), path resolution respecting `$XDG_CONFIG_HOME`, and `load_config`/`save_config` helpers.
 
-**Calendar data** (`// ── Calendar data ──`) — `CalEvent` struct, HTML stripping, link extraction, URL opening (platform-specific), ICS fetching via `reqwest::blocking`, parsing via `icalendar`, and `events_by_day` which builds a `HashMap<NaiveDate, Vec<usize>>` used throughout rendering.
+### `calendar.rs`
+`CalEvent` struct, HTML stripping (`strip_html`), link extraction (`extract_links`), URL opening (platform-specific), ICS fetching via `reqwest::blocking`, parsing via `icalendar`, and `events_by_day` which builds a `HashMap<NaiveDate, Vec<usize>>` used throughout rendering.
 
-**App state** (`// ── App state ──`) — `ViewMode`, `InputMode`, `PopupState`, and the central `App` struct with all navigation and mutation methods (`open_popup`, `close_popup`, `start_url_input`, `confirm_url_input`, `reload`, etc.).
+### `app.rs`
+`ViewMode`, `InputMode`, `PopupState`, and the central `App` struct with all navigation and mutation methods (`open_popup`, `close_popup`, `start_url_input`, `confirm_url_input`, `reload`, etc.).
 
-**Rendering** (`// ── Rendering ──`) — Theme and layout constants (see below), followed by `ui` (top-level frame composer), `centered_rect`, `render_popup`, `build_line_with_links`, `render_month`, `render_week`, `render_day_cell`, `wrap_text`, and `render_event_pane`.
+### `ui.rs`
+Theme and layout constants (see below), followed by `ui` (top-level frame composer), `centered_rect`, `render_popup`, `build_line_with_links`, `render_month`, `render_week`, `render_day_cell`, `wrap_text`, `format_time_range`, and `render_event_pane`. Date helpers (`month_name`, `days_in_month`, `weekday_col`, `week_monday`) live here as well.
 
-**Helpers** (`// ── Helpers ──`) — Pure utility functions: `month_name`, `days_in_month`, `weekday_col`, `week_monday`.
-
-**Main + Event loop** (`// ── Main ──`) — Terminal setup/teardown (crossterm alternate screen), the `run_loop` function which calls `terminal.draw` each tick and dispatches key events to the appropriate input-mode handler.
+### `main.rs`
+Terminal setup/teardown (crossterm alternate screen), the `run_loop` function which calls `terminal.draw` each tick and dispatches key events to the appropriate input-mode handler.
 
 ---
 
 ## Making aesthetic changes
 
-All visual values are centralized in the **Theme** and **Layout constants** block at the top of the Rendering section (`src/main.rs`, just before `fn ui`). No other code needs to change for purely cosmetic tweaks.
+All visual values are centralized in the **Theme** and **Layout constants** block at the top of `src/ui.rs`. No other code needs to change for purely cosmetic tweaks.
 
 ### Color / style constants
 
@@ -129,7 +139,7 @@ All visual values are centralized in the **Theme** and **Layout constants** bloc
 | `WEEK_TIME_WIDTH` | Character width reserved for the time prefix in week view (default 6) |
 | `WEEK_MAX_EVENT_LINES` | Max wrapped lines shown per event in week view (default 3) |
 | `CELL_MIN_HEIGHT` | Minimum row height for month-view cells in lines (default 3) |
-| `PANE_DESC_LINES` | Description preview lines shown in the event pane (default 3) |
+| `PANE_TIME_PREFIX_W` | Character width of "HH:MM-HH:MM " time prefix in event pane (default 12) |
 
 ---
 
