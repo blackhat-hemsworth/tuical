@@ -85,6 +85,36 @@ pub fn open_url(url: &str) {
     let _ = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn();
 }
 
+pub fn copy_to_clipboard(text: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()
+        });
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()
+        });
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", &format!("echo {} | clip", text)])
+        .spawn();
+}
+
 pub fn fetch_ics(url: &str) -> Result<String, String> {
     reqwest::blocking::get(url)
         .map_err(|e| e.to_string())?

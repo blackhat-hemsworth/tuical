@@ -161,12 +161,16 @@ pub fn ui(f: &mut Frame, app: &App) {
         InputMode::CalendarManager => {
             let hint = match app.cal_manager_mode {
                 CalManagerMode::Normal => {
-                    "  [j/k] navigate  [Space] toggle  [a] add  [d] delete  [e] rename  [c] color  [Esc/q] close"
+                    "  [Space] toggle  [a] add  [d] delete  [r] rename  [c] color  [Esc/q] close"
                 }
                 CalManagerMode::AddingUrl => "  Type URL, then press Enter  [Esc] cancel",
                 CalManagerMode::AddingName => "  Type calendar name, then press Enter  [Esc] cancel",
                 CalManagerMode::EditingName => "  Type new name, then press Enter  [Esc] cancel",
                 CalManagerMode::PickingColor => "  [←/→] pick color  [Enter] confirm  [Esc] cancel",
+                CalManagerMode::ChoosingType => "  [1/i] ICS URL  [2/g] Google Calendar  [Esc] cancel",
+                CalManagerMode::OAuthShowCode => "  [Enter] open browser  [Esc] cancel",
+                CalManagerMode::OAuthPolling => "  Waiting for authorization...  [Esc] cancel",
+                CalManagerMode::OAuthPickCalendar => "  [Enter/Space] add",
             };
             let status_line = Line::from(vec![
                 Span::raw(&app.status),
@@ -183,19 +187,62 @@ pub fn ui(f: &mut Frame, app: &App) {
         InputMode::Normal => {
             let hint = match app.view {
                 ViewMode::Month => {
-                    "  [←→↑↓] navigate  [j/k] select event  [o] open  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [r] set URL  [q] quit"
+                    "  [j/k] select event  [o] open  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [r] set URL  [q] quit"
                 }
                 ViewMode::Week => {
-                    "  [←→↑↓] navigate  [o] open event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
+                    "  [o] open event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
                 }
             };
-            let status_line = Line::from(vec![
-                Span::raw(&app.status),
-                Span::styled(hint, style_hint()),
-            ]);
+            let status_line = if app.status.is_empty() {
+                Line::from(Span::styled(hint.trim_start(), style_hint()))
+            } else {
+                Line::from(vec![
+                    Span::raw(&app.status),
+                    Span::styled(hint, style_hint()),
+                ])
+            };
             f.render_widget(Paragraph::new(status_line), status_area);
         }
     }
+
+    // ── Error popup overlay (rendered last, on top of everything) ─────
+    if let Some(err_msg) = &app.error {
+        render_error_popup(f, err_msg);
+    }
+}
+
+fn render_error_popup(f: &mut Frame, err_msg: &str) {
+    // Dim background
+    let area = f.area();
+    f.buffer_mut()
+        .set_style(area, Style::default().add_modifier(Modifier::DIM));
+
+    let max_width = ((area.width as f32 * 0.6) as u16).max(40).min(area.width);
+    let text_width = max_width.saturating_sub(4); // borders + padding
+
+    // Word-wrap the error message
+    let wrapped = wrap_text(err_msg, text_width as usize);
+    let text_lines = wrapped.len() as u16;
+    // +4: 2 for borders, 1 blank line before hint, 1 hint line
+    let height = (text_lines + 4).max(5).min(area.height);
+
+    let popup_area = centered_rect(max_width, height, area);
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Error ");
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = wrapped.into_iter().map(|l| Line::from(l)).collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("[any key] dismiss", style_hint())));
+
+    f.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(ratatui::widgets::Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -654,7 +701,11 @@ fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_calendar_manager(f: &mut Frame, app: &App) {
     let width = (f.area().width as f32 * 0.6).max(40.0) as u16;
-    let height = (app.config.calendars.len() as u16 + 8).min(f.area().height.saturating_sub(4));
+    let content_lines = match app.cal_manager_mode {
+        CalManagerMode::OAuthPickCalendar => app.oauth_calendars.len() + 1, // +1 for "Done"
+        _ => app.config.calendars.len(),
+    };
+    let height = (content_lines as u16 + 8).min(f.area().height.saturating_sub(4));
     let area = centered_rect(width, height, f.area());
 
     f.render_widget(Clear, area);
@@ -757,6 +808,62 @@ fn render_calendar_manager(f: &mut Frame, app: &App) {
                 color_spans.push(Span::styled(label, style));
             }
             lines.push(Line::from(color_spans));
+        }
+        CalManagerMode::ChoosingType => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Add calendar:", style_url_input_label())));
+            lines.push(Line::from(Span::styled("  [1/i] ICS URL (read-only)", style_hint())));
+            lines.push(Line::from(Span::styled("  [2/g] Google Calendar", style_hint())));
+        }
+        CalManagerMode::OAuthShowCode => {
+            lines.clear();
+            lines.push(Line::from(Span::styled("Google Sign-In", style_url_input_label())));
+            lines.push(Line::from(""));
+            if let Some(dc) = &app.oauth_device_code {
+                lines.push(Line::from(format!("  Go to: {}", dc.verification_url)));
+                lines.push(Line::from(format!("  Enter code: {} (copied to clipboard)", dc.user_code)));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  [Enter] open browser  [Esc] cancel", style_hint())));
+        }
+        CalManagerMode::OAuthPolling => {
+            lines.clear();
+            lines.push(Line::from(Span::styled("Google Sign-In", style_url_input_label())));
+            lines.push(Line::from(""));
+            let spinner = match app.oauth_poll_count % 4 {
+                0 => "◐",
+                1 => "◓",
+                2 => "◑",
+                _ => "◒",
+            };
+            lines.push(Line::from(format!("  Waiting for authorization... {spinner}")));
+            if let Some(dc) = &app.oauth_device_code {
+                lines.push(Line::from(format!("  Code: {}", dc.user_code)));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  [Esc] cancel", style_hint())));
+        }
+        CalManagerMode::OAuthPickCalendar => {
+            lines.clear();
+            lines.push(Line::from(Span::styled("Select Google Calendar(s):", style_url_input_label())));
+            for (i, cal_info) in app.oauth_calendars.iter().enumerate() {
+                let is_selected = i == app.oauth_cal_cursor;
+                let prefix = if is_selected { "  > " } else { "    " };
+                let style = if is_selected { style_selected_item() } else { Style::default() };
+                lines.push(Line::from(Span::styled(format!("{}{}", prefix, cal_info.display_name), style)));
+            }
+            if app.oauth_calendars.is_empty() {
+                lines.push(Line::from(Span::styled("  No calendars found", style_event_text())));
+            }
+            // "Done" item after all calendars
+            let done_selected = app.oauth_cal_cursor == app.oauth_calendars.len();
+            let done_prefix = if done_selected { "  > " } else { "    " };
+            let mut done_style = style_url_input_label(); // always bold
+            if done_selected {
+                done_style = done_style.fg(SEL_FG).bg(SEL_BG);
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(format!("{}Done", done_prefix), done_style)));
         }
         CalManagerMode::Normal => {}
     }

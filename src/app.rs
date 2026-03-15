@@ -1,9 +1,14 @@
 use std::collections::HashMap;
 
-use chrono::{Local, NaiveDate};
+use chrono::Local;
+use chrono::NaiveDate;
 
-use crate::calendar::{extract_links, events_by_day, fetch_ics, parse_ics, CalEvent};
-use crate::config::{save_config, CalendarEntry, Config};
+use crate::google::{self, CalendarInfo};
+use crate::calendar::{events_by_day, extract_links, fetch_ics, parse_ics, CalEvent};
+use crate::config::{
+    save_config, save_tokens, CalType, CalendarEntry, Config, GoogleTokens, load_tokens,
+};
+use crate::oauth::{self, DeviceCodeResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewMode {
@@ -26,6 +31,10 @@ pub enum CalManagerMode {
     AddingName,
     EditingName,
     PickingColor,
+    ChoosingType,
+    OAuthShowCode,
+    OAuthPolling,
+    OAuthPickCalendar,
 }
 
 pub struct PopupState {
@@ -60,12 +69,21 @@ pub struct App {
     pub cal_manager_input: String,
     pub cal_manager_pending_url: String,
     pub cal_manager_color_idx: usize,
+    // OAuth state
+    pub oauth_device_code: Option<DeviceCodeResponse>,
+    pub oauth_poll_count: u32,
+    pub oauth_account_email: Option<String>,
+    pub oauth_calendars: Vec<CalendarInfo>,
+    pub oauth_cal_cursor: usize,
+    pub google_tokens: HashMap<String, GoogleTokens>,
+    pub error: Option<String>,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let today = Local::now().date_naive();
         let has_calendars = !config.calendars.is_empty();
+        let google_tokens = load_tokens();
         App {
             config,
             events: Vec::new(),
@@ -87,7 +105,26 @@ impl App {
             cal_manager_input: String::new(),
             cal_manager_pending_url: String::new(),
             cal_manager_color_idx: 0,
+            oauth_device_code: None,
+            oauth_poll_count: 0,
+            oauth_account_email: None,
+            oauth_calendars: Vec::new(),
+            oauth_cal_cursor: 0,
+            google_tokens,
+            error: None,
         }
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status = String::new();
+    }
+
+    pub fn set_error(&mut self, msg: String) {
+        self.error = Some(msg);
+    }
+
+    pub fn clear_error(&mut self) {
+        self.error = None;
     }
 
     pub fn day_event_indices(&self) -> &[usize] {
@@ -136,7 +173,7 @@ impl App {
             self.status = String::from("URL cleared");
         } else {
             if let Err(e) = Self::validate_calendar_url(&url) {
-                self.status = format!("Invalid URL: {e}");
+                self.set_error(format!("Invalid URL: {e}"));
                 return;
             }
             if self.config.calendars.is_empty() {
@@ -145,12 +182,15 @@ impl App {
                     url,
                     color: "blue".into(),
                     enabled: true,
+                    cal_type: CalType::Ics,
+                    google_account: None,
+                    calendar_id: None,
                 });
             } else {
                 self.config.calendars[0].url = url;
             }
             if let Err(e) = save_config(&self.config) {
-                self.status = format!("Failed to save config: {e}");
+                self.set_error(format!("Failed to save config: {e}"));
                 return;
             }
             self.reload();
@@ -164,8 +204,10 @@ impl App {
     }
 
     pub fn reload(&mut self) {
-        let enabled: Vec<(usize, &CalendarEntry)> = self.config.calendars.iter().enumerate()
+        // Collect enabled calendar info into owned data to avoid borrow issues
+        let enabled: Vec<(usize, CalendarEntry)> = self.config.calendars.iter().enumerate()
             .filter(|(_, c)| c.enabled)
+            .map(|(i, c)| (i, c.clone()))
             .collect();
 
         if enabled.is_empty() {
@@ -181,9 +223,15 @@ impl App {
         let mut errors = Vec::new();
 
         for (cal_idx, cal) in &enabled {
-            match fetch_ics(&cal.url) {
-                Ok(raw) => {
-                    let mut events = parse_ics(&raw);
+            let events_result = match cal.cal_type {
+                CalType::Ics => {
+                    fetch_ics(&cal.url).map(|raw| parse_ics(&raw))
+                }
+                CalType::Google => self.fetch_google_calendar(cal),
+            };
+
+            match events_result {
+                Ok(mut events) => {
                     for ev in &mut events {
                         ev.calendar_id = *cal_idx;
                     }
@@ -202,8 +250,43 @@ impl App {
         if errors.is_empty() {
             self.status = format!("Loaded {} events from {} calendars", loaded, enabled.len());
         } else {
-            self.status = format!("Loaded {} events; errors: {}", loaded, errors.join(", "));
+            self.set_error(format!("Loaded {} events; errors: {}", loaded, errors.join(", ")));
         }
+    }
+
+    fn fetch_google_calendar(&mut self, cal: &CalendarEntry) -> Result<Vec<CalEvent>, String> {
+        let account = cal.google_account.as_deref()
+            .ok_or("Google calendar missing google_account")?;
+        let cal_id = cal.calendar_id.as_deref()
+            .ok_or("Google calendar missing calendar_id")?;
+
+        let tokens = self.google_tokens.get(account)
+            .ok_or(format!("No tokens for account {account} — re-authenticate via calendar manager"))?
+            .clone();
+
+        // Refresh token if expired
+        let now = chrono::Utc::now().timestamp();
+        let access_token = if now >= tokens.expires_at - 60 {
+            match oauth::refresh_access_token(&tokens.refresh_token) {
+                Ok(new_token) => {
+                    let expires_at = chrono::Utc::now().timestamp() + new_token.expires_in as i64;
+                    let updated = GoogleTokens {
+                        access_token: new_token.access_token.clone(),
+                        refresh_token: new_token.refresh_token
+                            .unwrap_or(tokens.refresh_token.clone()),
+                        expires_at,
+                    };
+                    self.google_tokens.insert(account.to_string(), updated);
+                    let _ = save_tokens(&self.google_tokens);
+                    new_token.access_token
+                }
+                Err(e) => return Err(format!("Token refresh failed: {e}")),
+            }
+        } else {
+            tokens.access_token.clone()
+        };
+
+        google::fetch_google_events(&access_token, cal_id)
     }
 
     // ── Calendar manager methods ─────────────────────────────────────────
@@ -268,6 +351,9 @@ impl App {
             url,
             color,
             enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
         });
         let _ = save_config(&self.config);
         self.reload();
@@ -285,6 +371,159 @@ impl App {
             cal.color = color;
             let _ = save_config(&self.config);
         }
+    }
+
+    // ── OAuth / CalDAV methods ───────────────────────────────────────────
+
+    pub fn start_add_calendar(&mut self) {
+        self.cal_manager_mode = CalManagerMode::ChoosingType;
+    }
+
+    pub fn choose_ics_type(&mut self) {
+        self.cal_manager_mode = CalManagerMode::AddingUrl;
+        self.cal_manager_input.clear();
+    }
+
+    pub fn choose_google_type(&mut self) {
+        if !oauth::credentials_configured() {
+            self.set_error(String::from("Google Calendar not configured — build with GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"));
+            self.cal_manager_mode = CalManagerMode::Normal;
+            return;
+        }
+
+        match oauth::request_device_code() {
+            Ok(resp) => {
+                crate::calendar::copy_to_clipboard(&resp.user_code);
+                self.oauth_device_code = Some(resp);
+                self.oauth_poll_count = 0;
+                self.cal_manager_mode = CalManagerMode::OAuthShowCode;
+            }
+            Err(e) => {
+                self.set_error(format!("OAuth error: {e}"));
+                self.cal_manager_mode = CalManagerMode::Normal;
+            }
+        }
+    }
+
+    pub fn start_oauth_polling(&mut self) {
+        // Open browser with verification URL
+        if let Some(dc) = &self.oauth_device_code {
+            crate::calendar::open_url(&dc.verification_url);
+        }
+        self.cal_manager_mode = CalManagerMode::OAuthPolling;
+    }
+
+    pub fn poll_oauth_token(&mut self) {
+        let device_code = match &self.oauth_device_code {
+            Some(dc) => dc.device_code.clone(),
+            None => {
+                self.set_error(String::from("No device code — try again"));
+                self.cal_manager_mode = CalManagerMode::Normal;
+                return;
+            }
+        };
+
+        self.oauth_poll_count += 1;
+
+        match oauth::poll_token(&device_code) {
+            Ok(Some(token_resp)) => {
+                // Got tokens — fetch user email and discover calendars
+                let expires_at = chrono::Utc::now().timestamp() + token_resp.expires_in as i64;
+                let refresh_token = token_resp.refresh_token.clone().unwrap_or_default();
+
+                match oauth::fetch_user_email(&token_resp.access_token) {
+                    Ok(email) => {
+                        self.google_tokens.insert(email.clone(), GoogleTokens {
+                            access_token: token_resp.access_token.clone(),
+                            refresh_token,
+                            expires_at,
+                        });
+                        let _ = save_tokens(&self.google_tokens);
+                        self.oauth_account_email = Some(email);
+
+                        // Discover calendars
+                        match google::discover_calendars(&token_resp.access_token) {
+                            Ok(cals) => {
+                                self.oauth_calendars = cals;
+                                self.oauth_cal_cursor = 0;
+                                self.cal_manager_mode = CalManagerMode::OAuthPickCalendar;
+                                self.status = String::from("Authorized — select calendars to add");
+                            }
+                            Err(e) => {
+                                self.set_error(format!("Calendar discovery failed: {e}"));
+                                self.cal_manager_mode = CalManagerMode::Normal;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.set_error(format!("Failed to get user info: {e}"));
+                        self.cal_manager_mode = CalManagerMode::Normal;
+                    }
+                }
+            }
+            Ok(None) => {
+                // Still pending — stay in polling mode
+            }
+            Err(e) => {
+                self.set_error(format!("OAuth failed: {e}"));
+                self.cal_manager_mode = CalManagerMode::Normal;
+                self.oauth_device_code = None;
+            }
+        }
+    }
+
+    pub fn add_google_calendar(&mut self) {
+        if self.oauth_calendars.is_empty() {
+            return;
+        }
+        let cal_info = &self.oauth_calendars[self.oauth_cal_cursor];
+        let email = self.oauth_account_email.clone().unwrap_or_default();
+
+        // Check if already added
+        let already_exists = self.config.calendars.iter().any(|c| {
+            c.cal_type == CalType::Google
+                && c.google_account.as_deref() == Some(&email)
+                && c.calendar_id.as_deref() == Some(&cal_info.id)
+        });
+
+        if already_exists {
+            self.status = format!("'{}' is already added", cal_info.display_name);
+            return;
+        }
+
+        let color_idx = self.config.calendars.len() % COLOR_PALETTE.len();
+        self.config.calendars.push(CalendarEntry {
+            name: cal_info.display_name.clone(),
+            url: String::new(),
+            color: COLOR_PALETTE[color_idx].to_string(),
+            enabled: true,
+            cal_type: CalType::Google,
+            google_account: Some(email),
+            calendar_id: Some(cal_info.id.clone()),
+        });
+        let _ = save_config(&self.config);
+        self.status = format!("Added '{}'", cal_info.display_name);
+        self.reload();
+    }
+
+    pub fn cancel_oauth(&mut self) {
+        self.oauth_device_code = None;
+        self.oauth_poll_count = 0;
+        self.oauth_account_email = None;
+        self.oauth_calendars.clear();
+        self.oauth_cal_cursor = 0;
+        self.cal_manager_mode = CalManagerMode::Normal;
+        self.status = String::from("OAuth cancelled");
+    }
+
+    pub fn finish_oauth_pick(&mut self) {
+        self.oauth_device_code = None;
+        self.oauth_poll_count = 0;
+        self.oauth_account_email = None;
+        self.oauth_calendars.clear();
+        self.oauth_cal_cursor = 0;
+        self.cal_manager_mode = CalManagerMode::Normal;
+        self.reload();
     }
 }
 
@@ -349,6 +588,9 @@ mod tests {
                 url: "https://example.com".into(),
                 color: "blue".into(),
                 enabled: true,
+                cal_type: CalType::Ics,
+                google_account: None,
+                calendar_id: None,
             }],
         };
         let app = App::new(config);
@@ -432,6 +674,9 @@ mod tests {
                 url: "https://cal.test".into(),
                 color: "blue".into(),
                 enabled: true,
+                cal_type: CalType::Ics,
+                google_account: None,
+                calendar_id: None,
             }],
         };
         let mut app = App::new(config);
@@ -476,6 +721,9 @@ mod tests {
             url: "https://example.com".into(),
             color: "blue".into(),
             enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
         });
         app.toggle_calendar(0);
         assert!(!app.config.calendars[0].enabled);
@@ -491,12 +739,18 @@ mod tests {
             url: "https://a.com".into(),
             color: "red".into(),
             enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
         });
         app.config.calendars.push(CalendarEntry {
             name: "B".into(),
             url: "https://b.com".into(),
             color: "green".into(),
             enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
         });
         app.remove_calendar(0);
         assert_eq!(app.config.calendars.len(), 1);
@@ -511,6 +765,9 @@ mod tests {
             url: "https://example.com".into(),
             color: "blue".into(),
             enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
         });
         app.rename_calendar(0, "New".into());
         assert_eq!(app.config.calendars[0].name, "New");
@@ -524,6 +781,9 @@ mod tests {
             url: "https://example.com".into(),
             color: "blue".into(),
             enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
         });
         app.set_calendar_color(0, "red".into());
         assert_eq!(app.config.calendars[0].color, "red");
@@ -569,5 +829,76 @@ mod tests {
             "https://this-domain-does-not-exist-999.invalid/cal.ics",
         );
         assert!(result.is_err());
+    }
+
+    // ── OAuth flow states ────────────────────────────────────────────────
+
+    #[test]
+    fn start_add_calendar_enters_choosing_type() {
+        let mut app = make_app();
+        app.open_calendar_manager();
+        app.start_add_calendar();
+        assert_eq!(app.cal_manager_mode, CalManagerMode::ChoosingType);
+    }
+
+    #[test]
+    fn choose_ics_type_enters_adding_url() {
+        let mut app = make_app();
+        app.open_calendar_manager();
+        app.start_add_calendar();
+        app.choose_ics_type();
+        assert_eq!(app.cal_manager_mode, CalManagerMode::AddingUrl);
+        assert!(app.cal_manager_input.is_empty());
+    }
+
+    #[test]
+    fn cancel_oauth_resets_state() {
+        let mut app = make_app();
+        app.oauth_device_code = Some(DeviceCodeResponse {
+            device_code: "test".into(),
+            user_code: "TEST-CODE".into(),
+            verification_url: "https://example.com".into(),
+            expires_in: 300,
+            interval: 5,
+        });
+        app.cal_manager_mode = CalManagerMode::OAuthPolling;
+        app.cancel_oauth();
+        assert!(app.oauth_device_code.is_none());
+        assert_eq!(app.cal_manager_mode, CalManagerMode::Normal);
+        assert_eq!(app.status, "OAuth cancelled");
+    }
+
+    #[test]
+    fn add_google_calendar_prevents_duplicates() {
+        let mut app = make_app();
+        app.oauth_account_email = Some("user@gmail.com".into());
+        app.oauth_calendars = vec![CalendarInfo {
+            id: "user@gmail.com".into(),
+            display_name: "My Calendar".into(),
+        }];
+        app.oauth_cal_cursor = 0;
+
+        // Add once
+        app.add_google_calendar();
+        assert_eq!(app.config.calendars.len(), 1);
+        assert_eq!(app.config.calendars[0].cal_type, CalType::Google);
+
+        // Try to add again — should be prevented
+        app.add_google_calendar();
+        assert_eq!(app.config.calendars.len(), 1);
+        assert!(app.status.contains("already added"));
+    }
+
+    #[test]
+    fn finish_oauth_pick_resets_state() {
+        let mut app = make_app();
+        app.oauth_calendars = vec![CalendarInfo {
+            id: "test".into(),
+            display_name: "Test".into(),
+        }];
+        app.cal_manager_mode = CalManagerMode::OAuthPickCalendar;
+        app.finish_oauth_pick();
+        assert!(app.oauth_calendars.is_empty());
+        assert_eq!(app.cal_manager_mode, CalManagerMode::Normal);
     }
 }
