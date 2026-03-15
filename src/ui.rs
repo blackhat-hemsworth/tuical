@@ -4,10 +4,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::app::{App, InputMode, PopupState, ViewMode};
+use crate::app::{App, CalManagerMode, InputMode, PopupState, ViewMode, COLOR_PALETTE};
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 // Edit these constants to change the visual appearance of the TUI.
@@ -69,6 +69,26 @@ const WEEK_TIME_WIDTH: usize = 6;
 const WEEK_MAX_EVENT_LINES: usize = 3;
 const CELL_MIN_HEIGHT: u16 = 3;
 const PANE_TIME_PREFIX_W: usize = 12; // "HH:MM-HH:MM " — always this width in the event pane
+
+// ── Color mapping ─────────────────────────────────────────────────────────────
+
+pub fn calendar_color(color_str: &str) -> Color {
+    match color_str {
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "blue" => Color::Blue,
+        "yellow" => Color::Yellow,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "light_red" => Color::LightRed,
+        "light_green" => Color::LightGreen,
+        "light_blue" => Color::LightBlue,
+        "light_yellow" => Color::LightYellow,
+        "light_magenta" => Color::LightMagenta,
+        "light_cyan" => Color::LightCyan,
+        _ => Color::White,
+    }
+}
 
 pub fn ui(f: &mut Frame, app: &App) {
     let today = Local::now().date_naive();
@@ -138,13 +158,35 @@ pub fn ui(f: &mut Frame, app: &App) {
                 render_popup(f, app, popup);
             }
         }
+        InputMode::CalendarManager => {
+            let hint = match app.cal_manager_mode {
+                CalManagerMode::Normal => {
+                    "  [j/k] navigate  [Space] toggle  [a] add  [d] delete  [e] rename  [c] color  [Esc/q] close"
+                }
+                CalManagerMode::AddingUrl => "  Type URL, then press Enter  [Esc] cancel",
+                CalManagerMode::AddingName => "  Type calendar name, then press Enter  [Esc] cancel",
+                CalManagerMode::EditingName => "  Type new name, then press Enter  [Esc] cancel",
+                CalManagerMode::PickingColor => "  [←/→] pick color  [Enter] confirm  [Esc] cancel",
+            };
+            let status_line = Line::from(vec![
+                Span::raw(&app.status),
+                Span::styled(hint, style_hint()),
+            ]);
+            f.render_widget(Paragraph::new(status_line), status_area);
+
+            // Dim background
+            let area = f.area();
+            f.buffer_mut()
+                .set_style(area, Style::default().add_modifier(Modifier::DIM));
+            render_calendar_manager(f, app);
+        }
         InputMode::Normal => {
             let hint = match app.view {
                 ViewMode::Month => {
-                    "  [←→↑↓] navigate  [j/k] select event  [o] open  [m/w] month/week  [Tab] toggle sidebar  [r] set URL  [q] quit"
+                    "  [←→↑↓] navigate  [j/k] select event  [o] open  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [r] set URL  [q] quit"
                 }
                 ViewMode::Week => {
-                    "  [←→↑↓] navigate  [o] open event  [m/w] month/week  [r] set URL  [q] quit"
+                    "  [←→↑↓] navigate  [o] open event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
                 }
             };
             let status_line = Line::from(vec![
@@ -163,8 +205,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn render_popup(f: &mut Frame, app: &App, popup: &PopupState) {
-    use ratatui::widgets::Clear;
-
     let ev = &app.events[popup.event_idx];
     let area = centered_rect(
         (f.area().width as f32 * POPUP_WIDTH_RATIO) as u16,
@@ -174,9 +214,14 @@ fn render_popup(f: &mut Frame, app: &App, popup: &PopupState) {
 
     f.render_widget(Clear, area);
 
+    let cal_label = app.config.calendars.get(ev.calendar_id)
+        .map(|c| format!(" [{}]", c.name))
+        .unwrap_or_default();
+
     let title_left = format!(
-        " [h←] {} ({}/{}) [→l] ",
+        " [h←] {}{} ({}/{}) [→l] ",
         ev.summary,
+        cal_label,
         popup.day_pos + 1,
         popup.day_indices.len()
     );
@@ -363,6 +408,14 @@ fn render_week(f: &mut Frame, app: &App, area: Rect, today: NaiveDate) {
     }
 }
 
+fn event_color_style(app: &App, event_idx: usize) -> Style {
+    let cal_id = app.events[event_idx].calendar_id;
+    let color = app.config.calendars.get(cal_id)
+        .map(|c| calendar_color(&c.color))
+        .unwrap_or(DIM_FG);
+    Style::default().fg(color)
+}
+
 fn render_day_cell(
     f: &mut Frame,
     app: &App,
@@ -393,7 +446,6 @@ fn render_day_cell(
 
     if show_time {
         // Week view: time prefix + wrapped summary, max WEEK_MAX_EVENT_LINES lines per event
-        // "HH:MM " = WEEK_TIME_WIDTH chars; all-day uses spaces
         let text_w = (cell_inner.width as usize).saturating_sub(WEEK_TIME_WIDTH + 1);
         let avail_lines = cell_inner.height.saturating_sub(1) as usize;
         let mut used = 0;
@@ -403,6 +455,7 @@ fn render_day_cell(
                 break;
             }
             let ev = &app.events[idx];
+            let ev_style = event_color_style(app, idx);
             let time_str = match ev.start_time {
                 Some(t) => format!("{:02}:{:02} ", t.hour(), t.minute()),
                 None => " ".repeat(WEEK_TIME_WIDTH),
@@ -418,10 +471,10 @@ fn render_day_cell(
                 let line = if i == 0 {
                     Line::from(vec![
                         Span::styled(time_str.clone(), style_header_label()),
-                        Span::styled(chunk.clone(), style_event_text()),
+                        Span::styled(chunk.clone(), ev_style),
                     ])
                 } else {
-                    Line::from(Span::styled(chunk.clone(), style_event_text()))
+                    Line::from(Span::styled(chunk.clone(), ev_style))
                 };
                 lines.push(line);
                 used += 1;
@@ -447,17 +500,18 @@ fn render_day_cell(
             }
         }
     } else {
-        // Month view: single truncated line per event
+        // Month view: single truncated line per event, colored by calendar
         let avail_lines = cell_inner.height.saturating_sub(1) as usize;
         for &idx in event_indices.iter().take(avail_lines) {
             let summary = &app.events[idx].summary;
+            let ev_style = event_color_style(app, idx);
             let max_w = cell_inner.width.saturating_sub(2) as usize;
             let display = if summary.len() > max_w {
                 format!(" {}…", &summary[..max_w.saturating_sub(1)])
             } else {
                 format!(" {}", summary)
             };
-            lines.push(Line::from(Span::styled(display, style_event_text())));
+            lines.push(Line::from(Span::styled(display, ev_style)));
         }
         if event_indices.len() > avail_lines && avail_lines > 0 {
             let extra = event_indices.len() - avail_lines + 1;
@@ -557,13 +611,20 @@ fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 style_header_label()
             };
+
+            // Build summary with calendar name prefix
+            let cal_prefix = app.config.calendars.get(ev.calendar_id)
+                .map(|c| format!("[{}] ", c.name))
+                .unwrap_or_default();
+            let full_summary = format!("{}{}", cal_prefix, ev.summary);
+
             let text_style = if is_selected {
                 style_selected_item()
             } else {
-                Style::default()
+                event_color_style(app, idx)
             };
 
-            let wrapped = wrap_text(&ev.summary, text_w.max(1));
+            let wrapped = wrap_text(&full_summary, text_w.max(1));
             let mut lines: Vec<Line> = wrapped
                 .iter()
                 .enumerate()
@@ -587,6 +648,120 @@ fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     f.render_widget(List::new(items), inner);
+}
+
+// ── Calendar Manager Panel ────────────────────────────────────────────────────
+
+fn render_calendar_manager(f: &mut Frame, app: &App) {
+    let width = (f.area().width as f32 * 0.6).max(40.0) as u16;
+    let height = (app.config.calendars.len() as u16 + 8).min(f.area().height.saturating_sub(4));
+    let area = centered_rect(width, height, f.area());
+
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Calendars ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    if app.config.calendars.is_empty() {
+        lines.push(Line::from(Span::styled("No calendars configured", style_event_text())));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Press 'a' to add a calendar", style_hint())));
+    } else {
+        for (i, cal) in app.config.calendars.iter().enumerate() {
+            let is_selected = i == app.cal_manager_cursor;
+            let checkbox = if cal.enabled { "[x]" } else { "[ ]" };
+            let color = calendar_color(&cal.color);
+            let dot_style = Style::default().fg(color);
+
+            let row_text = format!(" {} ● {}  {}", checkbox, cal.name, cal.url);
+
+            if is_selected {
+                let mut spans = vec![
+                    Span::styled(format!(" {} ", checkbox), style_selected_item()),
+                    Span::styled("● ", dot_style.bg(SEL_BG)),
+                    Span::styled(format!("{}  ", cal.name), style_selected_item()),
+                ];
+                // Truncate URL to fit
+                let url_max = (inner.width as usize).saturating_sub(row_text.len().min(inner.width as usize));
+                let url_display = if cal.url.len() > url_max && url_max > 3 {
+                    format!("{}…", &cal.url[..url_max - 1])
+                } else {
+                    cal.url.clone()
+                };
+                spans.push(Span::styled(url_display, style_selected_item()));
+                lines.push(Line::from(spans));
+            } else {
+                let mut spans = vec![
+                    Span::raw(format!(" {} ", checkbox)),
+                    Span::styled("● ", dot_style),
+                    Span::raw(format!("{}  ", cal.name)),
+                ];
+                let url_max = (inner.width as usize).saturating_sub(row_text.len().min(inner.width as usize));
+                let url_display = if cal.url.len() > url_max && url_max > 3 {
+                    format!("{}…", &cal.url[..url_max - 1])
+                } else {
+                    cal.url.clone()
+                };
+                spans.push(Span::styled(url_display, style_hint()));
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+
+    // Show sub-mode input
+    match app.cal_manager_mode {
+        CalManagerMode::AddingUrl => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("URL: ", style_url_input_label()),
+                Span::raw(&app.cal_manager_input),
+                Span::styled("█", style_hint()),
+            ]));
+        }
+        CalManagerMode::AddingName => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Name: ", style_url_input_label()),
+                Span::raw(&app.cal_manager_input),
+                Span::styled("█", style_hint()),
+            ]));
+        }
+        CalManagerMode::EditingName => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Rename: ", style_url_input_label()),
+                Span::raw(&app.cal_manager_input),
+                Span::styled("█", style_hint()),
+            ]));
+        }
+        CalManagerMode::PickingColor => {
+            lines.push(Line::from(""));
+            let mut color_spans: Vec<Span> = vec![Span::raw(" ")];
+            for (i, &color_name) in COLOR_PALETTE.iter().enumerate() {
+                let color = calendar_color(color_name);
+                let style = if i == app.cal_manager_color_idx {
+                    Style::default().fg(SEL_FG).bg(color).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(color)
+                };
+                let label = if i == app.cal_manager_color_idx {
+                    format!("[{}]", color_name)
+                } else {
+                    format!(" {} ", color_name)
+                };
+                color_spans.push(Span::styled(label, style));
+            }
+            lines.push(Line::from(color_spans));
+        }
+        CalManagerMode::Normal => {}
+    }
+
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 // ── Date/time helpers ─────────────────────────────────────────────────────────
@@ -641,6 +816,30 @@ mod tests {
     use super::*;
     use chrono::NaiveTime;
     use ratatui::layout::Rect;
+
+    // ── calendar_color ──────────────────────────────────────────────────
+
+    #[test]
+    fn calendar_color_maps_known_colors() {
+        assert_eq!(calendar_color("red"), Color::Red);
+        assert_eq!(calendar_color("green"), Color::Green);
+        assert_eq!(calendar_color("blue"), Color::Blue);
+        assert_eq!(calendar_color("yellow"), Color::Yellow);
+        assert_eq!(calendar_color("magenta"), Color::Magenta);
+        assert_eq!(calendar_color("cyan"), Color::Cyan);
+        assert_eq!(calendar_color("light_red"), Color::LightRed);
+        assert_eq!(calendar_color("light_green"), Color::LightGreen);
+        assert_eq!(calendar_color("light_blue"), Color::LightBlue);
+        assert_eq!(calendar_color("light_yellow"), Color::LightYellow);
+        assert_eq!(calendar_color("light_magenta"), Color::LightMagenta);
+        assert_eq!(calendar_color("light_cyan"), Color::LightCyan);
+    }
+
+    #[test]
+    fn calendar_color_unknown_returns_white() {
+        assert_eq!(calendar_color("unknown"), Color::White);
+        assert_eq!(calendar_color(""), Color::White);
+    }
 
     // ── month_name ───────────────────────────────────────────────────────
 

@@ -5,6 +5,7 @@ use icalendar::{Calendar, CalendarComponent, Component, EventLike};
 
 #[derive(Debug, Clone)]
 pub struct CalEvent {
+    pub calendar_id: usize,
     pub summary: String,
     pub start: NaiveDate,
     pub start_time: Option<NaiveTime>,
@@ -112,6 +113,7 @@ pub fn parse_ics(raw: &str) -> Vec<CalEvent> {
                 let end = if end <= start { start + Duration::days(1) } else { end };
                 let end_time = end_dt.and_then(|(_, t)| t);
                 events.push(CalEvent {
+                    calendar_id: 0,
                     summary,
                     start,
                     start_time,
@@ -319,6 +321,7 @@ END:VCALENDAR";
     #[test]
     fn events_by_day_single_day() {
         let events = vec![CalEvent {
+            calendar_id: 0,
             summary: "A".into(),
             start: NaiveDate::from_ymd_opt(2025, 3, 10).unwrap(),
             start_time: None,
@@ -335,6 +338,7 @@ END:VCALENDAR";
     #[test]
     fn events_by_day_multi_day_span() {
         let events = vec![CalEvent {
+            calendar_id: 0,
             summary: "Trip".into(),
             start: NaiveDate::from_ymd_opt(2025, 3, 10).unwrap(),
             start_time: None,
@@ -356,6 +360,7 @@ END:VCALENDAR";
         let date = NaiveDate::from_ymd_opt(2025, 3, 10).unwrap();
         let events = vec![
             CalEvent {
+                calendar_id: 0,
                 summary: "Timed".into(),
                 start: date,
                 start_time: Some(t),
@@ -365,6 +370,7 @@ END:VCALENDAR";
                 location: None,
             },
             CalEvent {
+                calendar_id: 0,
                 summary: "AllDay".into(),
                 start: date,
                 start_time: None,

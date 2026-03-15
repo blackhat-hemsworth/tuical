@@ -2,9 +2,20 @@ use std::{fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CalendarEntry {
+    pub name: String,
+    pub url: String,
+    pub color: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct Config {
+    #[serde(default, skip_serializing)]
     pub ics_url: Option<String>,
+    #[serde(default)]
+    pub calendars: Vec<CalendarEntry>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -23,11 +34,25 @@ fn config_dir() -> PathBuf {
 
 pub fn load_config() -> Config {
     let path = config_path();
-    if let Ok(contents) = fs::read_to_string(&path) {
+    let mut config: Config = if let Ok(contents) = fs::read_to_string(&path) {
         toml::from_str(&contents).unwrap_or_default()
     } else {
         Config::default()
+    };
+
+    // Migrate legacy ics_url to calendars list
+    if let Some(url) = config.ics_url.take() {
+        if config.calendars.is_empty() && !url.is_empty() {
+            config.calendars.push(CalendarEntry {
+                name: "Calendar".into(),
+                url,
+                color: "blue".into(),
+                enabled: true,
+            });
+        }
     }
+
+    config
 }
 
 pub fn save_config(config: &Config) -> Result<(), String> {

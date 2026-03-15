@@ -3,8 +3,9 @@
 ## Technical
 
 - weekly view --> grid
-- multi-ics w/ NAMES displayed on side bar & option for different colors
+- EDIT calendar
 
 ## Aesthetic
 
 - block icons or something to show events on monthly view??
+- Loaded note

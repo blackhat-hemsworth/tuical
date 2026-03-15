@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use chrono::{Local, NaiveDate};
 
 use crate::calendar::{extract_links, events_by_day, fetch_ics, parse_ics, CalEvent};
-use crate::config::{save_config, Config};
+use crate::config::{save_config, CalendarEntry, Config};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewMode {
@@ -16,6 +16,16 @@ pub enum InputMode {
     Normal,
     EnteringUrl,
     Popup,
+    CalendarManager,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CalManagerMode {
+    Normal,
+    AddingUrl,
+    AddingName,
+    EditingName,
+    PickingColor,
 }
 
 pub struct PopupState {
@@ -26,6 +36,11 @@ pub struct PopupState {
     pub links: Vec<String>,
     pub link_idx: usize,
 }
+
+pub const COLOR_PALETTE: &[&str] = &[
+    "red", "green", "blue", "yellow", "magenta", "cyan",
+    "light_red", "light_green", "light_blue", "light_yellow", "light_magenta", "light_cyan",
+];
 
 pub struct App {
     pub config: Config,
@@ -39,12 +54,18 @@ pub struct App {
     pub url_input: String,
     pub event_cursor: usize,
     pub popup: Option<PopupState>,
+    // Calendar manager state
+    pub cal_manager_cursor: usize,
+    pub cal_manager_mode: CalManagerMode,
+    pub cal_manager_input: String,
+    pub cal_manager_pending_url: String,
+    pub cal_manager_color_idx: usize,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let today = Local::now().date_naive();
-        let has_url = config.ics_url.is_some();
+        let has_calendars = !config.calendars.is_empty();
         App {
             config,
             events: Vec::new(),
@@ -52,15 +73,20 @@ impl App {
             cursor: today,
             view: ViewMode::Month,
             show_events: true,
-            status: if has_url {
+            status: if has_calendars {
                 String::from("Loading...")
             } else {
-                String::from("Press r to set ICS URL")
+                String::from("Press c to manage calendars")
             },
             input_mode: InputMode::Normal,
             url_input: String::new(),
             event_cursor: 0,
             popup: None,
+            cal_manager_cursor: 0,
+            cal_manager_mode: CalManagerMode::Normal,
+            cal_manager_input: String::new(),
+            cal_manager_pending_url: String::new(),
+            cal_manager_color_idx: 0,
         }
     }
 
@@ -97,7 +123,8 @@ impl App {
     }
 
     pub fn start_url_input(&mut self) {
-        self.url_input = self.config.ics_url.clone().unwrap_or_default();
+        // Legacy: pre-fill from first calendar URL if any
+        self.url_input = self.config.calendars.first().map(|c| c.url.clone()).unwrap_or_default();
         self.input_mode = InputMode::EnteringUrl;
     }
 
@@ -105,10 +132,23 @@ impl App {
         self.input_mode = InputMode::Normal;
         let url = self.url_input.trim().to_string();
         if url.is_empty() {
-            self.config.ics_url = None;
+            self.config.calendars.clear();
             self.status = String::from("URL cleared");
         } else {
-            self.config.ics_url = Some(url);
+            if let Err(e) = Self::validate_calendar_url(&url) {
+                self.status = format!("Invalid URL: {e}");
+                return;
+            }
+            if self.config.calendars.is_empty() {
+                self.config.calendars.push(CalendarEntry {
+                    name: "Calendar".into(),
+                    url,
+                    color: "blue".into(),
+                    enabled: true,
+                });
+            } else {
+                self.config.calendars[0].url = url;
+            }
             if let Err(e) = save_config(&self.config) {
                 self.status = format!("Failed to save config: {e}");
                 return;
@@ -124,20 +164,126 @@ impl App {
     }
 
     pub fn reload(&mut self) {
-        if let Some(url) = self.config.ics_url.clone() {
-            self.status = String::from("Loading...");
-            match fetch_ics(&url) {
+        let enabled: Vec<(usize, &CalendarEntry)> = self.config.calendars.iter().enumerate()
+            .filter(|(_, c)| c.enabled)
+            .collect();
+
+        if enabled.is_empty() {
+            self.events.clear();
+            self.day_map.clear();
+            self.status = String::from("No calendars enabled — press c to manage");
+            return;
+        }
+
+        self.status = String::from("Loading...");
+        let mut all_events = Vec::new();
+        let mut loaded = 0usize;
+        let mut errors = Vec::new();
+
+        for (cal_idx, cal) in &enabled {
+            match fetch_ics(&cal.url) {
                 Ok(raw) => {
-                    self.events = parse_ics(&raw);
-                    self.day_map = events_by_day(&self.events);
-                    self.status = format!("Loaded {} events", self.events.len());
+                    let mut events = parse_ics(&raw);
+                    for ev in &mut events {
+                        ev.calendar_id = *cal_idx;
+                    }
+                    loaded += events.len();
+                    all_events.extend(events);
                 }
                 Err(e) => {
-                    self.status = format!("Error: {e}");
+                    errors.push(format!("{}: {e}", cal.name));
                 }
             }
+        }
+
+        self.events = all_events;
+        self.day_map = events_by_day(&self.events);
+
+        if errors.is_empty() {
+            self.status = format!("Loaded {} events from {} calendars", loaded, enabled.len());
         } else {
-            self.status = String::from("No ICS URL set — press r to add one");
+            self.status = format!("Loaded {} events; errors: {}", loaded, errors.join(", "));
+        }
+    }
+
+    // ── Calendar manager methods ─────────────────────────────────────────
+
+    pub fn open_calendar_manager(&mut self) {
+        self.input_mode = InputMode::CalendarManager;
+        self.cal_manager_mode = CalManagerMode::Normal;
+        self.cal_manager_cursor = 0;
+        self.cal_manager_input.clear();
+    }
+
+    pub fn close_calendar_manager(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.cal_manager_mode = CalManagerMode::Normal;
+        self.cal_manager_input.clear();
+    }
+
+    pub fn toggle_calendar(&mut self, idx: usize) {
+        if let Some(cal) = self.config.calendars.get_mut(idx) {
+            cal.enabled = !cal.enabled;
+            let _ = save_config(&self.config);
+            self.reload();
+        }
+    }
+
+    pub fn remove_calendar(&mut self, idx: usize) {
+        if idx < self.config.calendars.len() {
+            self.config.calendars.remove(idx);
+            if self.cal_manager_cursor > 0 && self.cal_manager_cursor >= self.config.calendars.len() {
+                self.cal_manager_cursor = self.config.calendars.len().saturating_sub(1);
+            }
+            let _ = save_config(&self.config);
+            self.reload();
+        }
+    }
+
+    pub fn validate_calendar_url(url: &str) -> Result<(), String> {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err("URL must start with http:// or https://".into());
+        }
+        // Must have a host after the scheme
+        let after_scheme = if url.starts_with("https://") {
+            &url[8..]
+        } else {
+            &url[7..]
+        };
+        if after_scheme.is_empty() || after_scheme.starts_with('/') {
+            return Err("URL must include a hostname".into());
+        }
+        // Try fetching and parsing to verify it serves valid ICS data
+        let raw = fetch_ics(url)?;
+        let events = parse_ics(&raw);
+        if events.is_empty() && !raw.contains("VCALENDAR") {
+            return Err("URL does not appear to serve a valid ICS calendar".into());
+        }
+        Ok(())
+    }
+
+    pub fn add_calendar(&mut self, name: String, url: String, color: String) {
+        self.config.calendars.push(CalendarEntry {
+            name,
+            url,
+            color,
+            enabled: true,
+        });
+        let _ = save_config(&self.config);
+        self.reload();
+    }
+
+    pub fn rename_calendar(&mut self, idx: usize, name: String) {
+        if let Some(cal) = self.config.calendars.get_mut(idx) {
+            cal.name = name;
+            let _ = save_config(&self.config);
+        }
+    }
+
+    pub fn set_calendar_color(&mut self, idx: usize, color: String) {
+        if let Some(cal) = self.config.calendars.get_mut(idx) {
+            cal.color = color;
+            let _ = save_config(&self.config);
         }
     }
 }
@@ -157,6 +303,7 @@ mod tests {
         let date = app.cursor;
         app.events = vec![
             CalEvent {
+                calendar_id: 0,
                 summary: "Event A".into(),
                 start: date,
                 start_time: Some(NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
@@ -166,6 +313,7 @@ mod tests {
                 location: Some("Room 1".into()),
             },
             CalEvent {
+                calendar_id: 0,
                 summary: "Event B".into(),
                 start: date,
                 start_time: None,
@@ -193,16 +341,24 @@ mod tests {
     }
 
     #[test]
-    fn new_with_url_shows_loading() {
-        let config = Config { ics_url: Some("https://example.com".into()) };
+    fn new_with_calendars_shows_loading() {
+        let config = Config {
+            ics_url: None,
+            calendars: vec![CalendarEntry {
+                name: "Test".into(),
+                url: "https://example.com".into(),
+                color: "blue".into(),
+                enabled: true,
+            }],
+        };
         let app = App::new(config);
         assert_eq!(app.status, "Loading...");
     }
 
     #[test]
-    fn new_without_url_shows_prompt() {
+    fn new_without_calendars_shows_prompt() {
         let app = make_app();
-        assert!(app.status.contains("Press r"));
+        assert!(app.status.contains("calendars"));
     }
 
     // ── day_event_indices ────────────────────────────────────────────────
@@ -243,12 +399,9 @@ mod tests {
     #[test]
     fn open_popup_extracts_links() {
         let mut app = make_app_with_events();
-        // Event A (timed) has a description with a link; Event B (all-day) is first
-        // All-day sorts first, so day_pos=0 -> Event B (no links)
         app.event_cursor = 0;
         app.open_popup();
         let popup = app.popup.as_ref().unwrap();
-        // Event B (all-day, no description) comes first
         assert!(popup.links.is_empty());
     }
 
@@ -272,7 +425,15 @@ mod tests {
 
     #[test]
     fn start_url_input_prefills_existing() {
-        let config = Config { ics_url: Some("https://cal.test".into()) };
+        let config = Config {
+            ics_url: None,
+            calendars: vec![CalendarEntry {
+                name: "Test".into(),
+                url: "https://cal.test".into(),
+                color: "blue".into(),
+                enabled: true,
+            }],
+        };
         let mut app = App::new(config);
         app.start_url_input();
         assert_eq!(app.url_input, "https://cal.test");
@@ -287,5 +448,126 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.url_input.is_empty());
         assert_eq!(app.status, "Cancelled");
+    }
+
+    // ── Calendar manager ─────────────────────────────────────────────────
+
+    #[test]
+    fn open_calendar_manager_sets_mode() {
+        let mut app = make_app();
+        app.open_calendar_manager();
+        assert_eq!(app.input_mode, InputMode::CalendarManager);
+        assert_eq!(app.cal_manager_mode, CalManagerMode::Normal);
+    }
+
+    #[test]
+    fn close_calendar_manager_returns_to_normal() {
+        let mut app = make_app();
+        app.open_calendar_manager();
+        app.close_calendar_manager();
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn toggle_calendar_flips_enabled() {
+        let mut app = make_app();
+        app.config.calendars.push(CalendarEntry {
+            name: "Test".into(),
+            url: "https://example.com".into(),
+            color: "blue".into(),
+            enabled: true,
+        });
+        app.toggle_calendar(0);
+        assert!(!app.config.calendars[0].enabled);
+        app.toggle_calendar(0);
+        assert!(app.config.calendars[0].enabled);
+    }
+
+    #[test]
+    fn remove_calendar_removes_entry() {
+        let mut app = make_app();
+        app.config.calendars.push(CalendarEntry {
+            name: "A".into(),
+            url: "https://a.com".into(),
+            color: "red".into(),
+            enabled: true,
+        });
+        app.config.calendars.push(CalendarEntry {
+            name: "B".into(),
+            url: "https://b.com".into(),
+            color: "green".into(),
+            enabled: true,
+        });
+        app.remove_calendar(0);
+        assert_eq!(app.config.calendars.len(), 1);
+        assert_eq!(app.config.calendars[0].name, "B");
+    }
+
+    #[test]
+    fn rename_calendar_updates_name() {
+        let mut app = make_app();
+        app.config.calendars.push(CalendarEntry {
+            name: "Old".into(),
+            url: "https://example.com".into(),
+            color: "blue".into(),
+            enabled: true,
+        });
+        app.rename_calendar(0, "New".into());
+        assert_eq!(app.config.calendars[0].name, "New");
+    }
+
+    #[test]
+    fn set_calendar_color_updates_color() {
+        let mut app = make_app();
+        app.config.calendars.push(CalendarEntry {
+            name: "Test".into(),
+            url: "https://example.com".into(),
+            color: "blue".into(),
+            enabled: true,
+        });
+        app.set_calendar_color(0, "red".into());
+        assert_eq!(app.config.calendars[0].color, "red");
+    }
+
+    // ── URL validation ──────────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_empty_url() {
+        let result = App::validate_calendar_url("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("http"));
+    }
+
+    #[test]
+    fn validate_rejects_non_http_scheme() {
+        assert!(App::validate_calendar_url("ftp://example.com").is_err());
+        assert!(App::validate_calendar_url("file:///etc/passwd").is_err());
+        assert!(App::validate_calendar_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_scheme_only() {
+        assert!(App::validate_calendar_url("http://").is_err());
+        assert!(App::validate_calendar_url("https://").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_scheme_with_path_only() {
+        assert!(App::validate_calendar_url("http:///path").is_err());
+        assert!(App::validate_calendar_url("https:///path").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_url_before_add() {
+        let result = App::validate_calendar_url("not-a-url");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_unreachable_url() {
+        let result = App::validate_calendar_url(
+            "https://this-domain-does-not-exist-999.invalid/cal.ics",
+        );
+        assert!(result.is_err());
     }
 }
