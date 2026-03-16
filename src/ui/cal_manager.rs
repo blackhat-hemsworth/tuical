@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::app::{App, COLOR_PALETTE, CalManagerMode};
+use crate::app::{App, COLOR_PALETTE, GLYPH_PALETTE, CalManagerMode, glyph_for_color};
 use crate::config::CalType;
 
 use super::styles::{
@@ -53,7 +53,7 @@ pub fn render_calendar_manager(f: &mut Frame, app: &App) {
             if is_selected {
                 let mut spans = vec![
                     Span::styled(format!(" {} ", checkbox), style_selected_item()),
-                    Span::styled("● ", dot_style.bg(SEL_BG)),
+                    Span::styled(format!("{} ", glyph_for_color(&cal.color)), dot_style.bg(SEL_BG)),
                     Span::styled(format!("{}  ", cal.name), style_selected_item()),
                 ];
                 // Truncate URL to fit
@@ -69,7 +69,7 @@ pub fn render_calendar_manager(f: &mut Frame, app: &App) {
             } else {
                 let mut spans = vec![
                     Span::raw(format!(" {} ", checkbox)),
-                    Span::styled("● ", dot_style),
+                    Span::styled(format!("{} ", glyph_for_color(&cal.color)), dot_style),
                     Span::raw(format!("{}  ", cal.name)),
                 ];
                 let url_max =
@@ -116,22 +116,25 @@ pub fn render_calendar_manager(f: &mut Frame, app: &App) {
             let mut color_spans: Vec<Span> = vec![Span::raw(" ")];
             for (i, &color_name) in COLOR_PALETTE.iter().enumerate() {
                 let color = calendar_color(color_name);
+                let glyph = GLYPH_PALETTE[i];
                 let style = if i == app.cal_manager_color_idx {
-                    Style::default()
-                        .fg(SEL_FG)
-                        .bg(color)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(SEL_FG).bg(color).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(color)
                 };
                 let label = if i == app.cal_manager_color_idx {
-                    format!("[{}]", color_name)
+                    format!("[{}]", glyph)
                 } else {
-                    format!(" {} ", color_name)
+                    format!(" {} ", glyph)
                 };
                 color_spans.push(Span::styled(label, style));
             }
             lines.push(Line::from(color_spans));
+            let selected_name = COLOR_PALETTE[app.cal_manager_color_idx];
+            lines.push(Line::from(Span::styled(
+                format!("  {}", selected_name),
+                style_hint(),
+            )));
         }
         CalManagerMode::ChoosingType => {
             lines.push(Line::from(""));

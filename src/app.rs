@@ -65,6 +65,18 @@ pub const COLOR_PALETTE: &[&str] = &[
     "light_red", "light_green", "light_blue", "light_yellow", "light_magenta", "light_cyan",
 ];
 
+pub const GLYPH_PALETTE: &[&str] = &[
+    "♥", "♣", "♠", "♦", "✿", "⚘",
+    "⚑", "✺", "⊕", "❖", "✦", "⚙",
+];
+
+pub fn glyph_for_color(color: &str) -> &'static str {
+    COLOR_PALETTE.iter()
+        .position(|&c| c == color)
+        .map(|i| GLYPH_PALETTE[i])
+        .unwrap_or("●")
+}
+
 pub struct EventFormState {
     pub mode: EventFormMode,
     pub is_edit: bool,

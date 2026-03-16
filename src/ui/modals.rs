@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::app::{App, EventFormState, PopupState};
+use crate::app::{App, EventFormState, PopupState, glyph_for_color};
 use crate::config::EventFormMode;
 
 use super::styles::{
@@ -141,9 +141,12 @@ pub fn render_event_form(f: &mut Frame, app: &App, form: &EventFormState) {
     let inner = block.inner(popup_area);
     f.render_widget(block, popup_area);
 
+    let cal_glyph = app.config.calendars.get(form.calendar_idx)
+        .map(|c| glyph_for_color(&c.color))
+        .unwrap_or("●");
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
-        Span::styled("  ● ", Style::default().fg(cal_color)),
+        Span::styled(format!("  {} ", cal_glyph), Style::default().fg(cal_color)),
         Span::styled(cal_name, style_url_input_label()),
     ]));
 
@@ -196,7 +199,7 @@ pub fn render_event_form(f: &mut Frame, app: &App, form: &EventFormState) {
             // Show calendar + all fields + confirm hint
             lines.push(Line::from(vec![
                 Span::styled("  Calendar: ", style_hint()),
-                Span::styled("● ", Style::default().fg(cal_color)),
+                Span::styled(format!("{} ", cal_glyph), Style::default().fg(cal_color)),
                 Span::raw(cal_name.to_string()),
             ]));
             for &(label, value, _) in fields {

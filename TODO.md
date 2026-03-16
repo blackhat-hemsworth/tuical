@@ -9,12 +9,11 @@
 - outlook integration
 - proton integration
 - toggle back/forth during load
+- ICS set-url function to "c" screen
 
 ## Aesthetic
 
 - block icons or something to show events on monthly view??
-  -- symbols per calendar
-  -- color stuff lol
 
 ## Backlog
 
