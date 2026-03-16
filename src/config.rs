@@ -23,6 +23,18 @@ pub struct CalendarEntry {
     pub google_account: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_role: Option<String>,
+}
+
+impl CalendarEntry {
+    pub fn is_writable(&self) -> bool {
+        match self.access_role.as_deref() {
+            Some("owner") | Some("writer") => true,
+            Some(_) => false,
+            None => self.cal_type == CalType::Google,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -88,6 +100,7 @@ pub fn load_config() -> Config {
                 cal_type: CalType::Ics,
                 google_account: None,
                 calendar_id: None,
+                access_role: None,
             });
         }
     }
@@ -184,6 +197,72 @@ mod tests {
         assert_eq!(entry.cal_type, CalType::Google);
         assert_eq!(entry.google_account.as_deref(), Some("user@gmail.com"));
         assert_eq!(entry.calendar_id.as_deref(), Some("user@gmail.com"));
+    }
+
+    #[test]
+    fn is_writable_owner() {
+        let entry = CalendarEntry {
+            name: "Test".into(), url: String::new(), color: "blue".into(),
+            enabled: true, cal_type: CalType::Google,
+            google_account: None, calendar_id: None,
+            access_role: Some("owner".into()),
+        };
+        assert!(entry.is_writable());
+    }
+
+    #[test]
+    fn is_writable_writer() {
+        let entry = CalendarEntry {
+            name: "Test".into(), url: String::new(), color: "blue".into(),
+            enabled: true, cal_type: CalType::Google,
+            google_account: None, calendar_id: None,
+            access_role: Some("writer".into()),
+        };
+        assert!(entry.is_writable());
+    }
+
+    #[test]
+    fn is_writable_reader_returns_false() {
+        let entry = CalendarEntry {
+            name: "Test".into(), url: String::new(), color: "blue".into(),
+            enabled: true, cal_type: CalType::Google,
+            google_account: None, calendar_id: None,
+            access_role: Some("reader".into()),
+        };
+        assert!(!entry.is_writable());
+    }
+
+    #[test]
+    fn is_writable_freebusy_returns_false() {
+        let entry = CalendarEntry {
+            name: "Test".into(), url: String::new(), color: "blue".into(),
+            enabled: true, cal_type: CalType::Google,
+            google_account: None, calendar_id: None,
+            access_role: Some("freeBusyReader".into()),
+        };
+        assert!(!entry.is_writable());
+    }
+
+    #[test]
+    fn is_writable_none_google_assumes_writable() {
+        let entry = CalendarEntry {
+            name: "Test".into(), url: String::new(), color: "blue".into(),
+            enabled: true, cal_type: CalType::Google,
+            google_account: None, calendar_id: None,
+            access_role: None,
+        };
+        assert!(entry.is_writable());
+    }
+
+    #[test]
+    fn is_writable_none_ics_returns_false() {
+        let entry = CalendarEntry {
+            name: "Test".into(), url: String::new(), color: "blue".into(),
+            enabled: true, cal_type: CalType::Ics,
+            google_account: None, calendar_id: None,
+            access_role: None,
+        };
+        assert!(!entry.is_writable());
     }
 
     #[test]

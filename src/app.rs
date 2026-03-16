@@ -55,7 +55,6 @@ pub const COLOR_PALETTE: &[&str] = &[
 pub struct EventFormState {
     pub mode: EventFormMode,
     pub is_edit: bool,
-    pub editing_event_idx: Option<usize>,
     pub calendar_idx: usize,
     pub google_event_id: Option<String>,
     pub title: String,
@@ -206,6 +205,7 @@ impl App {
                     cal_type: CalType::Ics,
                     google_account: None,
                     calendar_id: None,
+                    access_role: None,
                 });
             } else {
                 self.config.calendars[0].url = url;
@@ -317,12 +317,12 @@ impl App {
     pub fn start_create_event(&mut self) {
         // Find first enabled Google calendar
         let google_cal = self.config.calendars.iter().enumerate().find(|(_, c)| {
-            c.enabled && c.cal_type == CalType::Google
+            c.enabled && c.cal_type == CalType::Google && c.is_writable()
         });
         let (cal_idx, _cal) = match google_cal {
             Some(pair) => pair,
             None => {
-                self.set_error("No Google Calendar configured — only Google Calendar events can be created".into());
+                self.set_error("No writable Google Calendar found — press c to add one".into());
                 return;
             }
         };
@@ -330,7 +330,6 @@ impl App {
         self.event_form = Some(EventFormState {
             mode: EventFormMode::Title,
             is_edit: false,
-            editing_event_idx: None,
             calendar_idx: cal_idx,
             google_event_id: None,
             title: String::new(),
@@ -356,11 +355,14 @@ impl App {
         }
 
         let cal_idx = ev.calendar_id;
+        if !self.config.calendars[cal_idx].is_writable() {
+            self.set_error("This calendar is read-only".into());
+            return;
+        }
         self.event_form_input = ev.summary.clone();
         self.event_form = Some(EventFormState {
             mode: EventFormMode::Title,
             is_edit: true,
-            editing_event_idx: Some(event_idx),
             calendar_idx: cal_idx,
             google_event_id: ev.google_event_id.clone(),
             title: ev.summary.clone(),
@@ -378,6 +380,38 @@ impl App {
             None => return,
         };
         let input = self.event_form_input.trim().to_string();
+
+        // In edit mode, Enter saves current field and submits immediately
+        if form.is_edit {
+            // Save current field
+            match form.mode {
+                EventFormMode::Title => form.title = input,
+                EventFormMode::Date => form.date = input,
+                EventFormMode::StartTime => form.start_time = input,
+                EventFormMode::EndTime => form.end_time = input,
+                EventFormMode::Description => form.description = input,
+                EventFormMode::Confirm => {}
+            }
+            // Validate all fields before submit
+            if form.title.trim().is_empty() {
+                self.error = Some("Title cannot be empty".into());
+                return;
+            }
+            if chrono::NaiveDate::parse_from_str(&form.date, "%Y-%m-%d").is_err() {
+                self.error = Some("Invalid date format — use YYYY-MM-DD".into());
+                return;
+            }
+            if !form.start_time.is_empty() && chrono::NaiveTime::parse_from_str(&form.start_time, "%H:%M").is_err() {
+                self.error = Some("Invalid start time — use HH:MM or leave empty".into());
+                return;
+            }
+            if !form.end_time.is_empty() && chrono::NaiveTime::parse_from_str(&form.end_time, "%H:%M").is_err() {
+                self.error = Some("Invalid end time — use HH:MM or leave empty".into());
+                return;
+            }
+            self.submit_event_form();
+            return;
+        }
 
         match form.mode {
             EventFormMode::Title => {
@@ -432,6 +466,71 @@ impl App {
                 self.submit_event_form();
             }
         }
+    }
+
+    fn save_current_form_input(&mut self) {
+        let form = match &mut self.event_form {
+            Some(f) => f,
+            None => return,
+        };
+        let input = self.event_form_input.clone();
+        match form.mode {
+            EventFormMode::Title => form.title = input,
+            EventFormMode::Date => form.date = input,
+            EventFormMode::StartTime => form.start_time = input,
+            EventFormMode::EndTime => form.end_time = input,
+            EventFormMode::Description => form.description = input,
+            EventFormMode::Confirm => {}
+        }
+    }
+
+    fn load_form_field_input(&mut self) {
+        let form = match &self.event_form {
+            Some(f) => f,
+            None => return,
+        };
+        self.event_form_input = match form.mode {
+            EventFormMode::Title => form.title.clone(),
+            EventFormMode::Date => form.date.clone(),
+            EventFormMode::StartTime => form.start_time.clone(),
+            EventFormMode::EndTime => form.end_time.clone(),
+            EventFormMode::Description => form.description.clone(),
+            EventFormMode::Confirm => String::new(),
+        };
+    }
+
+    pub fn event_form_next_field(&mut self) {
+        self.save_current_form_input();
+        let form = match &mut self.event_form {
+            Some(f) => f,
+            None => return,
+        };
+        form.mode = match form.mode {
+            EventFormMode::Title => EventFormMode::Date,
+            EventFormMode::Date => EventFormMode::StartTime,
+            EventFormMode::StartTime => EventFormMode::EndTime,
+            EventFormMode::EndTime => EventFormMode::Description,
+            EventFormMode::Description => EventFormMode::Description,
+            EventFormMode::Confirm => EventFormMode::Confirm,
+        };
+        self.load_form_field_input();
+    }
+
+    pub fn event_form_prev_field(&mut self) {
+        self.save_current_form_input();
+        let form = match &mut self.event_form {
+            Some(f) => f,
+            None => return,
+        };
+        form.mode = match form.mode {
+            EventFormMode::Title => EventFormMode::Title,
+            EventFormMode::Date => EventFormMode::Title,
+            EventFormMode::StartTime => EventFormMode::Date,
+            EventFormMode::EndTime => EventFormMode::StartTime,
+            EventFormMode::Description => EventFormMode::EndTime,
+            EventFormMode::Confirm => EventFormMode::Description,
+        };
+        self.load_form_field_input();
     }
 
     fn submit_event_form(&mut self) {
@@ -555,6 +654,11 @@ impl App {
             self.set_error("This event is read-only — only Google Calendar events can be deleted".into());
             return;
         }
+        let cal_idx = ev.calendar_id;
+        if !self.config.calendars[cal_idx].is_writable() {
+            self.set_error("This calendar is read-only".into());
+            return;
+        }
         self.confirm_delete = Some(event_idx);
     }
 
@@ -670,6 +774,7 @@ impl App {
             cal_type: CalType::Ics,
             google_account: None,
             calendar_id: None,
+            access_role: None,
         });
         let _ = save_config(&self.config);
         self.reload();
@@ -816,6 +921,7 @@ impl App {
             cal_type: CalType::Google,
             google_account: Some(email),
             calendar_id: Some(cal_info.id.clone()),
+            access_role: cal_info.access_role.clone(),
         });
         let _ = save_config(&self.config);
         self.status = format!("Added '{}'", cal_info.display_name);
@@ -909,6 +1015,7 @@ mod tests {
                 cal_type: CalType::Ics,
                 google_account: None,
                 calendar_id: None,
+                access_role: None,
             }],
         };
         let app = App::new(config);
@@ -995,6 +1102,7 @@ mod tests {
                 cal_type: CalType::Ics,
                 google_account: None,
                 calendar_id: None,
+                access_role: None,
             }],
         };
         let mut app = App::new(config);
@@ -1042,6 +1150,7 @@ mod tests {
             cal_type: CalType::Ics,
             google_account: None,
             calendar_id: None,
+            access_role: None,
         });
         app.toggle_calendar(0);
         assert!(!app.config.calendars[0].enabled);
@@ -1060,6 +1169,7 @@ mod tests {
             cal_type: CalType::Ics,
             google_account: None,
             calendar_id: None,
+            access_role: None,
         });
         app.config.calendars.push(CalendarEntry {
             name: "B".into(),
@@ -1069,6 +1179,7 @@ mod tests {
             cal_type: CalType::Ics,
             google_account: None,
             calendar_id: None,
+            access_role: None,
         });
         app.remove_calendar(0);
         assert_eq!(app.config.calendars.len(), 1);
@@ -1086,6 +1197,7 @@ mod tests {
             cal_type: CalType::Ics,
             google_account: None,
             calendar_id: None,
+            access_role: None,
         });
         app.rename_calendar(0, "New".into());
         assert_eq!(app.config.calendars[0].name, "New");
@@ -1102,6 +1214,7 @@ mod tests {
             cal_type: CalType::Ics,
             google_account: None,
             calendar_id: None,
+            access_role: None,
         });
         app.set_calendar_color(0, "red".into());
         assert_eq!(app.config.calendars[0].color, "red");
@@ -1193,6 +1306,7 @@ mod tests {
         app.oauth_calendars = vec![CalendarInfo {
             id: "user@gmail.com".into(),
             display_name: "My Calendar".into(),
+            access_role: Some("owner".into()),
         }];
         app.oauth_cal_cursor = 0;
 
@@ -1213,6 +1327,7 @@ mod tests {
         app.oauth_calendars = vec![CalendarInfo {
             id: "test".into(),
             display_name: "Test".into(),
+            access_role: None,
         }];
         app.cal_manager_mode = CalManagerMode::OAuthPickCalendar;
         app.finish_oauth_pick();

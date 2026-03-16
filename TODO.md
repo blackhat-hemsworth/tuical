@@ -9,6 +9,14 @@
 ## Aesthetic
 
 - block icons or something to show events on monthly view??
+  -- symbols per calendar
 - indicate editability
 - "loading" message
-- select calendar add mode like select calendar
+- color stuff lol
+- event screen should list time
+
+## Backlog
+
+- delete calendars
+- ux: where to put keymaps -- can we simplify
+- refactor ui.rs?

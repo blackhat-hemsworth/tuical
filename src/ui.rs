@@ -139,13 +139,17 @@ pub fn ui(f: &mut Frame, app: &App) {
         }
         InputMode::EventForm => {
             let hint = if let Some(form) = &app.event_form {
-                match form.mode {
-                    EventFormMode::Title => "  Enter title  [Esc] cancel",
-                    EventFormMode::Date => "  Enter date (YYYY-MM-DD)  [Esc] cancel",
-                    EventFormMode::StartTime => "  Enter start time (HH:MM) or empty for all-day  [Esc] cancel",
-                    EventFormMode::EndTime => "  Enter end time (HH:MM) or empty  [Esc] cancel",
-                    EventFormMode::Description => "  Enter description  [Esc] cancel",
-                    EventFormMode::Confirm => "  [Enter] save  [Esc] cancel",
+                if form.is_edit {
+                    "  [↑/↓] fields  [Enter] save  [Esc] cancel"
+                } else {
+                    match form.mode {
+                        EventFormMode::Title => "  Enter title  [Esc] cancel",
+                        EventFormMode::Date => "  Enter date (YYYY-MM-DD)  [Esc] cancel",
+                        EventFormMode::StartTime => "  Enter start time (HH:MM) or empty for all-day  [Esc] cancel",
+                        EventFormMode::EndTime => "  Enter end time (HH:MM) or empty  [Esc] cancel",
+                        EventFormMode::Description => "  Enter description  [Esc] cancel",
+                        EventFormMode::Confirm => "  [Enter] save  [Esc] cancel",
+                    }
                 }
             } else {
                 ""
@@ -201,7 +205,7 @@ pub fn ui(f: &mut Frame, app: &App) {
                 CalManagerMode::ChoosingType => "  [1/i] ICS URL  [2/g] Google Calendar  [Esc] cancel",
                 CalManagerMode::OAuthShowCode => "  [Enter] open browser  [Esc] cancel",
                 CalManagerMode::OAuthPolling => "  Waiting for authorization...  [Esc] cancel",
-                CalManagerMode::OAuthPickCalendar => "  [Enter/Space] add",
+                CalManagerMode::OAuthPickCalendar => "  [Enter/Space] add  [Esc] done",
             };
             let status_line = Line::from(vec![
                 Span::raw(&app.status),
@@ -312,39 +316,59 @@ fn render_event_form(f: &mut Frame, app: &App, form: &crate::app::EventFormState
         ("Desc", &form.description, EventFormMode::Description),
     ];
 
-    for &(label, value, field_mode) in fields {
-        if form.mode == field_mode {
-            // Active input field
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {}: ", label), style_url_input_label()),
-                Span::raw(&app.event_form_input),
-                Span::styled("█", style_hint()),
-            ]));
-        } else if form.mode > field_mode {
-            // Completed field
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {}: ", label), style_hint()),
-                Span::styled(value.to_string(), style_hint()),
-            ]));
-        }
-        // Future fields: don't show
-    }
-
-    if form.mode == EventFormMode::Confirm {
-        // Show calendar + all fields + confirm hint
-        lines.push(Line::from(vec![
-            Span::styled("  Calendar: ", style_hint()),
-            Span::styled("● ", Style::default().fg(cal_color)),
-            Span::raw(cal_name.to_string()),
-        ]));
-        for &(label, value, _) in fields {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {}: ", label), style_hint()),
-                Span::raw(value.to_string()),
-            ]));
+    if form.is_edit {
+        // Edit mode: show all fields, active one is editable
+        for &(label, value, field_mode) in fields {
+            if form.mode == field_mode {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("▸ {}: ", label), style_url_input_label()),
+                    Span::raw(&app.event_form_input),
+                    Span::styled("█", style_hint()),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", label), style_hint()),
+                    Span::raw(value.to_string()),
+                ]));
+            }
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  [Enter] save  [Esc] cancel", style_hint())));
+        lines.push(Line::from(Span::styled("  [↑/↓] fields  [Enter] save  [Esc] cancel", style_hint())));
+    } else {
+        for &(label, value, field_mode) in fields {
+            if form.mode == field_mode {
+                // Active input field
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", label), style_url_input_label()),
+                    Span::raw(&app.event_form_input),
+                    Span::styled("█", style_hint()),
+                ]));
+            } else if form.mode > field_mode {
+                // Completed field
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", label), style_hint()),
+                    Span::styled(value.to_string(), style_hint()),
+                ]));
+            }
+            // Future fields: don't show
+        }
+
+        if form.mode == EventFormMode::Confirm {
+            // Show calendar + all fields + confirm hint
+            lines.push(Line::from(vec![
+                Span::styled("  Calendar: ", style_hint()),
+                Span::styled("● ", Style::default().fg(cal_color)),
+                Span::raw(cal_name.to_string()),
+            ]));
+            for &(label, value, _) in fields {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", label), style_hint()),
+                    Span::raw(value.to_string()),
+                ]));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("  [Enter] save  [Esc] cancel", style_hint())));
+        }
     }
 
     f.render_widget(Paragraph::new(Text::from(lines)), inner);
@@ -974,11 +998,18 @@ fn render_calendar_manager(f: &mut Frame, app: &App) {
         CalManagerMode::OAuthPickCalendar => {
             lines.clear();
             lines.push(Line::from(Span::styled("Select Google Calendar(s):", style_url_input_label())));
+            let email = app.oauth_account_email.as_deref().unwrap_or("");
             for (i, cal_info) in app.oauth_calendars.iter().enumerate() {
                 let is_selected = i == app.oauth_cal_cursor;
                 let prefix = if is_selected { "  > " } else { "    " };
                 let style = if is_selected { style_selected_item() } else { Style::default() };
-                lines.push(Line::from(Span::styled(format!("{}{}", prefix, cal_info.display_name), style)));
+                let already_added = app.config.calendars.iter().any(|c| {
+                    c.cal_type == crate::config::CalType::Google
+                        && c.google_account.as_deref() == Some(email)
+                        && c.calendar_id.as_deref() == Some(&cal_info.id)
+                });
+                let suffix = if already_added { "  (added)" } else { "" };
+                lines.push(Line::from(Span::styled(format!("{}{}{}", prefix, cal_info.display_name, suffix), style)));
             }
             if app.oauth_calendars.is_empty() {
                 lines.push(Line::from(Span::styled("  No calendars found", style_event_text())));

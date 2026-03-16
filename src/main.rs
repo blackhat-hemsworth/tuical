@@ -108,6 +108,12 @@ fn run_loop(
                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.event_form_input.clear();
                         }
+                        KeyCode::Up if app.event_form.as_ref().is_some_and(|f| f.is_edit) => {
+                            app.event_form_prev_field();
+                        }
+                        KeyCode::Down if app.event_form.as_ref().is_some_and(|f| f.is_edit) => {
+                            app.event_form_next_field();
+                        }
                         KeyCode::Char(c) => app.event_form_input.push(c),
                         _ => {}
                     }
@@ -284,6 +290,9 @@ fn run_loop(
                                     } else {
                                         app.add_google_calendar();
                                     }
+                                }
+                                KeyCode::Esc => {
+                                    app.finish_oauth_pick();
                                 }
                                 _ => {}
                             }

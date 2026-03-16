@@ -10,6 +10,7 @@ const EVENTS_BASE: &str = "https://www.googleapis.com/calendar/v3/calendars";
 pub struct CalendarInfo {
     pub id: String,
     pub display_name: String,
+    pub access_role: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -21,6 +22,8 @@ struct CalendarListResponse {
 struct CalendarListEntry {
     id: String,
     summary: String,
+    #[serde(rename = "accessRole")]
+    access_role: Option<String>,
 }
 
 /// Discover calendars via the Google Calendar REST API (calendarList).
@@ -45,6 +48,7 @@ pub fn discover_calendars(access_token: &str) -> Result<Vec<CalendarInfo>, Strin
     Ok(list.items.into_iter().map(|e| CalendarInfo {
         id: e.id,
         display_name: e.summary,
+        access_role: e.access_role,
     }).collect())
 }
 
