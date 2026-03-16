@@ -58,6 +58,20 @@ fn main() -> io::Result<()> {
     result
 }
 
+/// Handle a key event for a plain text input field.
+/// Returns true if the key was consumed, false if the caller should handle it.
+fn handle_text_input(field: &mut String, key: &event::KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Backspace => { field.pop(); true }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            field.clear();
+            true
+        }
+        KeyCode::Char(c) => { field.push(c); true }
+        _ => false,
+    }
+}
+
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
@@ -89,12 +103,7 @@ fn run_loop(
                     match key.code {
                         KeyCode::Enter => app.confirm_url_input(),
                         KeyCode::Esc => app.cancel_url_input(),
-                        KeyCode::Backspace => { app.url_input.pop(); }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.url_input.clear();
-                        }
-                        KeyCode::Char(c) => app.url_input.push(c),
-                        _ => {}
+                        _ => { handle_text_input(&mut app.url_input, &key); }
                     }
                     continue;
                 }
@@ -104,18 +113,13 @@ fn run_loop(
                     match key.code {
                         KeyCode::Enter => app.advance_event_form(),
                         KeyCode::Esc => app.cancel_event_form(),
-                        KeyCode::Backspace => { app.event_form_input.pop(); }
-                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.event_form_input.clear();
-                        }
                         KeyCode::Up if app.event_form.as_ref().is_some_and(|f| f.is_edit) => {
                             app.event_form_prev_field();
                         }
                         KeyCode::Down if app.event_form.as_ref().is_some_and(|f| f.is_edit) => {
                             app.event_form_next_field();
                         }
-                        KeyCode::Char(c) => app.event_form_input.push(c),
-                        _ => {}
+                        _ => { handle_text_input(&mut app.event_form_input, &key); }
                     }
                     continue;
                 }
@@ -320,12 +324,7 @@ fn run_loop(
                                     app.cal_manager_input.clear();
                                     app.cal_manager_mode = CalManagerMode::Normal;
                                 }
-                                KeyCode::Backspace => { app.cal_manager_input.pop(); }
-                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                    app.cal_manager_input.clear();
-                                }
-                                KeyCode::Char(c) => app.cal_manager_input.push(c),
-                                _ => {}
+                                _ => { handle_text_input(&mut app.cal_manager_input, &key); }
                             }
                         }
                         CalManagerMode::AddingName => {
@@ -348,12 +347,7 @@ fn run_loop(
                                     app.cal_manager_pending_url.clear();
                                     app.cal_manager_mode = CalManagerMode::Normal;
                                 }
-                                KeyCode::Backspace => { app.cal_manager_input.pop(); }
-                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                    app.cal_manager_input.clear();
-                                }
-                                KeyCode::Char(c) => app.cal_manager_input.push(c),
-                                _ => {}
+                                _ => { handle_text_input(&mut app.cal_manager_input, &key); }
                             }
                         }
                         CalManagerMode::EditingName => {
@@ -371,12 +365,7 @@ fn run_loop(
                                     app.cal_manager_input.clear();
                                     app.cal_manager_mode = CalManagerMode::Normal;
                                 }
-                                KeyCode::Backspace => { app.cal_manager_input.pop(); }
-                                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                    app.cal_manager_input.clear();
-                                }
-                                KeyCode::Char(c) => app.cal_manager_input.push(c),
-                                _ => {}
+                                _ => { handle_text_input(&mut app.cal_manager_input, &key); }
                             }
                         }
                         CalManagerMode::PickingColor => {

@@ -1,5 +1,7 @@
 # TODO
 
+- change name to TUIcal
+
 ## Technical
 
 - weekly view --> grid

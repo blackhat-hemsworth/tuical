@@ -64,6 +64,19 @@ pub struct EventFormState {
     pub description: String,
 }
 
+impl EventFormState {
+    pub fn set_field(&mut self, input: String) {
+        match self.mode {
+            EventFormMode::Title => self.title = input,
+            EventFormMode::Date => self.date = input,
+            EventFormMode::StartTime => self.start_time = input,
+            EventFormMode::EndTime => self.end_time = input,
+            EventFormMode::Description => self.description = input,
+            EventFormMode::Confirm => {}
+        }
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub events: Vec<CalEvent>,
@@ -384,14 +397,7 @@ impl App {
         // In edit mode, Enter saves current field and submits immediately
         if form.is_edit {
             // Save current field
-            match form.mode {
-                EventFormMode::Title => form.title = input,
-                EventFormMode::Date => form.date = input,
-                EventFormMode::StartTime => form.start_time = input,
-                EventFormMode::EndTime => form.end_time = input,
-                EventFormMode::Description => form.description = input,
-                EventFormMode::Confirm => {}
-            }
+            form.set_field(input.clone());
             // Validate all fields before submit
             if form.title.trim().is_empty() {
                 self.error = Some("Title cannot be empty".into());
@@ -469,18 +475,9 @@ impl App {
     }
 
     fn save_current_form_input(&mut self) {
-        let form = match &mut self.event_form {
-            Some(f) => f,
-            None => return,
-        };
         let input = self.event_form_input.clone();
-        match form.mode {
-            EventFormMode::Title => form.title = input,
-            EventFormMode::Date => form.date = input,
-            EventFormMode::StartTime => form.start_time = input,
-            EventFormMode::EndTime => form.end_time = input,
-            EventFormMode::Description => form.description = input,
-            EventFormMode::Confirm => {}
+        if let Some(form) = &mut self.event_form {
+            form.set_field(input);
         }
     }
 
@@ -928,23 +925,22 @@ impl App {
         self.reload();
     }
 
-    pub fn cancel_oauth(&mut self) {
+    fn reset_oauth_state(&mut self) {
         self.oauth_device_code = None;
         self.oauth_poll_count = 0;
         self.oauth_account_email = None;
         self.oauth_calendars.clear();
         self.oauth_cal_cursor = 0;
         self.cal_manager_mode = CalManagerMode::Normal;
+    }
+
+    pub fn cancel_oauth(&mut self) {
+        self.reset_oauth_state();
         self.status = String::from("OAuth cancelled");
     }
 
     pub fn finish_oauth_pick(&mut self) {
-        self.oauth_device_code = None;
-        self.oauth_poll_count = 0;
-        self.oauth_account_email = None;
-        self.oauth_calendars.clear();
-        self.oauth_cal_cursor = 0;
-        self.cal_manager_mode = CalManagerMode::Normal;
+        self.reset_oauth_state();
         self.reload();
     }
 }
