@@ -16,7 +16,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use app::{App, CalManagerMode, InputMode, ViewMode, COLOR_PALETTE};
-use calendar::{extract_links, open_url};
+use calendar::{extract_links, open_url, RsvpStatus};
 use config::{config_path, load_config};
 use ui::ui;
 
@@ -143,6 +143,9 @@ fn run_loop(
                     match key.code {
                         KeyCode::Char('e') => { app.start_edit_event(); continue; }
                         KeyCode::Char('d') => { app.start_delete_event(); continue; }
+                        KeyCode::Char('y') => { app.submit_rsvp(RsvpStatus::Accepted); continue; }
+                        KeyCode::Char('n') => { app.submit_rsvp(RsvpStatus::Declined); continue; }
+                        KeyCode::Char('m') => { app.submit_rsvp(RsvpStatus::Tentative); continue; }
                         _ => {}
                     }
                     if let Some(popup) = app.popup.as_mut() {

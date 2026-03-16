@@ -698,6 +698,7 @@ impl App {
                 location: None,
                 calendar_id: form.calendar_idx,
                 google_event_id: None,
+                rsvp_status: None,
             };
             self.events.push(local_event);
             self.day_map = events_by_day(&self.events);
@@ -803,6 +804,54 @@ impl App {
 
     pub fn cancel_delete(&mut self) {
         self.confirm_delete = None;
+    }
+
+    pub fn submit_rsvp(&mut self, status: crate::calendar::RsvpStatus) {
+        let popup = match &self.popup {
+            Some(p) => p,
+            None => return,
+        };
+        let event_idx = popup.event_idx;
+        let ev = &self.events[event_idx];
+
+        let google_event_id = match &ev.google_event_id {
+            Some(id) => id.clone(),
+            None => {
+                self.set_error("RSVP is only available for Google Calendar events".into());
+                return;
+            }
+        };
+
+        let cal = match self.config.calendars.get(ev.calendar_id) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let account = match cal.google_account.as_deref() {
+            Some(a) => a.to_string(),
+            None => return,
+        };
+        let cal_id = match cal.calendar_id.as_deref() {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        let access_token = match self.get_access_token(&account) {
+            Ok(t) => t,
+            Err(e) => { self.set_error(e); return; }
+        };
+
+        // Optimistic update
+        self.events[event_idx].rsvp_status = Some(status);
+        self.status = format!("RSVP: {}…", status.as_google());
+
+        let tx = self.tx.clone();
+        let status_str = status.as_google().to_string();
+        std::thread::spawn(move || {
+            match google::rsvp_google_event(&access_token, &cal_id, &google_event_id, &status_str) {
+                Ok(()) => { let _ = tx.send(AppMsg::CrudDone); }
+                Err(e) => { let _ = tx.send(AppMsg::CrudError(format!("RSVP failed: {e}"))); }
+            }
+        });
     }
 
     // ── Calendar manager methods ─────────────────────────────────────────
@@ -1126,6 +1175,7 @@ mod tests {
                 description: Some("Details at https://example.com".into()),
                 location: Some("Room 1".into()),
                 google_event_id: None,
+                rsvp_status: None,
             },
             CalEvent {
                 calendar_id: 0,
@@ -1137,6 +1187,7 @@ mod tests {
                 description: None,
                 location: None,
                 google_event_id: None,
+                rsvp_status: None,
             },
         ];
         app.day_map = events_by_day(&app.events);

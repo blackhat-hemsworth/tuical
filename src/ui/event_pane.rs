@@ -72,7 +72,10 @@ pub fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 ""
             };
-            let full_summary = format!("{}{}{}", writable_marker, cal_prefix, ev.summary);
+            let rsvp_marker = ev.rsvp_status
+                .map(|s| format!("{} ", s.symbol()))
+                .unwrap_or_default();
+            let full_summary = format!("{}{}{}{}", rsvp_marker, writable_marker, cal_prefix, ev.summary);
 
             let text_style = if is_selected {
                 style_selected_item()

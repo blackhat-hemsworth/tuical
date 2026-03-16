@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, EventFormState, PopupState, glyph_for_color};
+use crate::calendar::RsvpStatus;
 use crate::config::EventFormMode;
 
 use super::styles::{
@@ -90,6 +91,20 @@ pub fn render_popup(f: &mut Frame, app: &App, popup: &PopupState) {
     };
     lines.push(Line::from(Span::styled(time_str, style_event_text())));
     lines.push(Line::from(""));
+
+    if let Some(rsvp) = &ev.rsvp_status {
+        let label = match rsvp {
+            RsvpStatus::Accepted => "Accepted",
+            RsvpStatus::Declined => "Declined",
+            RsvpStatus::Tentative => "Maybe",
+            RsvpStatus::NeedsAction => "No response",
+        };
+        lines.push(Line::from(Span::styled(
+            format!("RSVP: {} {}", rsvp.symbol(), label),
+            style_event_text(),
+        )));
+        lines.push(Line::from(""));
+    }
 
     if let Some(loc) = &ev.location {
         lines.push(Line::from(Span::styled(

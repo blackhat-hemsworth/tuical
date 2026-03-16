@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDate};
 use serde::Deserialize;
 
-use crate::calendar::{strip_html, CalEvent};
+use crate::calendar::{strip_html, CalEvent, RsvpStatus};
 
 const CALENDAR_LIST_URL: &str = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
 const EVENTS_BASE: &str = "https://www.googleapis.com/calendar/v3/calendars";
@@ -69,6 +69,16 @@ struct GoogleEvent {
     end: Option<EventDateTime>,
     description: Option<String>,
     location: Option<String>,
+    #[serde(default)]
+    attendees: Vec<GoogleAttendee>,
+}
+
+#[derive(Deserialize)]
+struct GoogleAttendee {
+    #[serde(rename = "responseStatus")]
+    response_status: Option<String>,
+    #[serde(rename = "self", default)]
+    is_self: bool,
 }
 
 #[derive(Deserialize)]
@@ -142,6 +152,11 @@ fn convert_google_event(ge: &GoogleEvent) -> Option<CalEvent> {
     let description = ge.description.as_deref().map(strip_html);
     let location = ge.location.clone();
 
+    let rsvp_status = ge.attendees.iter()
+        .find(|a| a.is_self)
+        .and_then(|a| a.response_status.as_deref())
+        .and_then(RsvpStatus::from_google);
+
     Some(CalEvent {
         calendar_id: 0,
         summary,
@@ -152,6 +167,7 @@ fn convert_google_event(ge: &GoogleEvent) -> Option<CalEvent> {
         description,
         location,
         google_event_id: ge.id.clone(),
+        rsvp_status,
     })
 }
 
@@ -289,6 +305,62 @@ pub fn delete_google_event(
         let resp_body = resp.text().unwrap_or_default();
         return Err(format!("Delete event failed ({}): {}", status, resp_body));
     }
+    Ok(())
+}
+
+pub fn rsvp_google_event(
+    access_token: &str,
+    calendar_id: &str,
+    event_id: &str,
+    status: &str,
+) -> Result<(), String> {
+    let url = format!(
+        "{}/{}/events/{}",
+        EVENTS_BASE,
+        urlencoded(calendar_id),
+        urlencoded(event_id)
+    );
+    let client = reqwest::blocking::Client::new();
+
+    // Fetch current event to get full attendees list
+    let get_resp = client
+        .get(&url)
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|e| format!("Failed to fetch event for RSVP: {e}"))?;
+
+    if !get_resp.status().is_success() {
+        let body = get_resp.text().unwrap_or_default();
+        return Err(format!("Failed to fetch event: {body}"));
+    }
+
+    let event: serde_json::Value = get_resp
+        .json()
+        .map_err(|e| format!("Failed to parse event: {e}"))?;
+
+    // Update self-attendee's responseStatus
+    let mut attendees = event["attendees"].as_array().cloned().unwrap_or_default();
+    for att in &mut attendees {
+        if att["self"].as_bool() == Some(true) {
+            att["responseStatus"] = serde_json::json!(status);
+        }
+    }
+
+    let patch_body = serde_json::json!({ "attendees": attendees });
+
+    let resp = client
+        .patch(&url)
+        .bearer_auth(access_token)
+        .query(&[("sendUpdates", "none")])
+        .json(&patch_body)
+        .send()
+        .map_err(|e| format!("RSVP request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("RSVP failed: {body}"));
+    }
+
     Ok(())
 }
 

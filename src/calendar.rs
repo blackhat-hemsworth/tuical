@@ -3,6 +3,54 @@ use std::collections::HashMap;
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime};
 use icalendar::{Calendar, CalendarComponent, Component, EventLike};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RsvpStatus {
+    Accepted,
+    Declined,
+    Tentative,
+    NeedsAction,
+}
+
+impl RsvpStatus {
+    pub fn from_google(s: &str) -> Option<Self> {
+        match s {
+            "accepted" => Some(Self::Accepted),
+            "declined" => Some(Self::Declined),
+            "tentative" => Some(Self::Tentative),
+            "needsAction" => Some(Self::NeedsAction),
+            _ => None,
+        }
+    }
+
+    pub fn from_ics(s: &str) -> Option<Self> {
+        match s {
+            "ACCEPTED" => Some(Self::Accepted),
+            "DECLINED" => Some(Self::Declined),
+            "TENTATIVE" => Some(Self::Tentative),
+            "NEEDS-ACTION" => Some(Self::NeedsAction),
+            _ => None,
+        }
+    }
+
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::Accepted => "✓",
+            Self::Declined => "✗",
+            Self::Tentative => "?",
+            Self::NeedsAction => "·",
+        }
+    }
+
+    pub fn as_google(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Declined => "declined",
+            Self::Tentative => "tentative",
+            Self::NeedsAction => "needsAction",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CalEvent {
     pub calendar_id: usize,
@@ -14,6 +62,7 @@ pub struct CalEvent {
     pub description: Option<String>,
     pub location: Option<String>,
     pub google_event_id: Option<String>,
+    pub rsvp_status: Option<RsvpStatus>,
 }
 
 pub fn strip_html(s: &str) -> String {
@@ -143,6 +192,17 @@ pub fn parse_ics(raw: &str) -> Vec<CalEvent> {
                 let end = end_dt.map(|(d, _)| d).unwrap_or(start + Duration::days(1));
                 let end = if end <= start { start + Duration::days(1) } else { end };
                 let end_time = end_dt.and_then(|(_, t)| t);
+                // Extract RSVP status from ATTENDEE properties
+                let rsvp_status = ev.multi_properties()
+                    .get("ATTENDEE")
+                    .and_then(|attendees| {
+                        attendees.iter().find_map(|prop| {
+                            prop.params()
+                                .get("PARTSTAT")
+                                .and_then(|p| RsvpStatus::from_ics(p.value()))
+                        })
+                    });
+
                 events.push(CalEvent {
                     calendar_id: 0,
                     summary,
@@ -153,6 +213,7 @@ pub fn parse_ics(raw: &str) -> Vec<CalEvent> {
                     description: ev.get_description().map(|d| strip_html(d)),
                     location: ev.get_location().map(str::to_string),
                     google_event_id: None,
+                    rsvp_status,
                 });
             }
         }
@@ -362,6 +423,7 @@ END:VCALENDAR";
             description: None,
             location: None,
             google_event_id: None,
+            rsvp_status: None,
         }];
         let map = events_by_day(&events);
         assert_eq!(map.len(), 1);
@@ -380,6 +442,7 @@ END:VCALENDAR";
             description: None,
             location: None,
             google_event_id: None,
+            rsvp_status: None,
         }];
         let map = events_by_day(&events);
         assert_eq!(map.len(), 3); // 10, 11, 12 (end is exclusive)
@@ -403,6 +466,7 @@ END:VCALENDAR";
                 description: None,
                 location: None,
                 google_event_id: None,
+                rsvp_status: None,
             },
             CalEvent {
                 calendar_id: 0,
@@ -414,6 +478,7 @@ END:VCALENDAR";
                 description: None,
                 location: None,
                 google_event_id: None,
+                rsvp_status: None,
             },
         ];
         let map = events_by_day(&events);

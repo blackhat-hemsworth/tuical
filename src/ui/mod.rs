@@ -106,10 +106,10 @@ pub fn ui(f: &mut Frame, app: &App) {
                 let hint = if app.confirm_delete.is_some() {
                     "  [y/Enter] confirm delete  [any key] cancel".to_string()
                 } else if popup.links.is_empty() {
-                    "  [↑/↓] scroll  [e] edit  [d] delete  [Esc/q] close".to_string()
+                    "  [e] edit  [d] delete  [y] accept  [n] decline  [m] maybe  [↑/↓] scroll  [Esc/q] close".to_string()
                 } else {
                     format!(
-                        "  [↑/↓] scroll  [j/k] select link ({}/{})  [o] open link  [e] edit  [d] delete  [Esc/q] close",
+                        "  [j/k] link ({}/{})  [o] open  [e] edit  [d] delete  [y/n/m] RSVP  [↑/↓] scroll  [Esc/q] close",
                         popup.link_idx + 1,
                         popup.links.len()
                     )
