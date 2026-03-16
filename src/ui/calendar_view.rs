@@ -10,14 +10,17 @@ use ratatui::{
 use crate::app::App;
 
 use super::styles::{
-    calendar_color, style_cursor, style_event_text, style_header_label, style_today,
-    CELL_MIN_HEIGHT, DIM_FG, SEL_BG, SEL_FG, WEEK_MAX_EVENT_LINES, WEEK_TIME_WIDTH,
+    CELL_MIN_HEIGHT, DIM_FG, SEL_BG, SEL_FG, WEEK_MAX_EVENT_LINES, WEEK_TIME_WIDTH, calendar_color,
+    style_cursor, style_event_text, style_header_label, style_today,
 };
 use super::utils::{days_in_month, month_name, week_monday, weekday_col, wrap_text};
 
 pub fn event_color_style(app: &App, event_idx: usize) -> Style {
     let cal_id = app.events[event_idx].calendar_id;
-    let color = app.config.calendars.get(cal_id)
+    let color = app
+        .config
+        .calendars
+        .get(cal_id)
         .map(|c| calendar_color(&c.color))
         .unwrap_or(DIM_FG);
     Style::default().fg(color)
@@ -169,7 +172,7 @@ fn render_day_cell(
             let ev_style = event_color_style(app, idx);
             let time_str = match ev.start_time {
                 Some(t) => format!("{:02}:{:02} ", t.hour(), t.minute()),
-                None => " ".repeat(WEEK_TIME_WIDTH),
+                None => "".repeat(WEEK_TIME_WIDTH),
             };
 
             let wrapped = wrap_text(&ev.summary, text_w.max(1));
@@ -216,13 +219,27 @@ fn render_day_cell(
         for &idx in event_indices.iter().take(avail_lines) {
             let summary = &app.events[idx].summary;
             let ev_style = event_color_style(app, idx);
-            let max_w = cell_inner.width.saturating_sub(2) as usize;
-            let display = if summary.len() > max_w {
-                format!(" {}…", &summary[..max_w.saturating_sub(1)])
+            let is_writable = app
+                .config
+                .calendars
+                .get(app.events[idx].calendar_id)
+                .map(|c| c.is_writable())
+                .unwrap_or(false);
+            let max_w = cell_inner.width.saturating_sub(4) as usize; // 2 prefix + 1 space + 1 pad
+            let truncated = if summary.len() > max_w {
+                format!("{}…", &summary[..max_w.saturating_sub(1)])
             } else {
-                format!(" {}", summary)
+                summary.clone()
             };
-            lines.push(Line::from(Span::styled(display, ev_style)));
+            let prefix_span = if is_writable {
+                Span::styled("✎", ev_style)
+            } else {
+                Span::raw("")
+            };
+            lines.push(Line::from(vec![
+                prefix_span,
+                Span::styled(truncated, ev_style),
+            ]));
         }
         if event_indices.len() > avail_lines && avail_lines > 0 {
             let extra = event_indices.len() - avail_lines + 1;

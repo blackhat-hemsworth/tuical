@@ -37,7 +37,7 @@ impl CalendarEntry {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Config {
     #[serde(default, skip_serializing)]
     pub ics_url: Option<String>,

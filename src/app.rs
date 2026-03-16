@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::mpsc;
 
 use chrono::Local;
 use chrono::NaiveDate;
@@ -9,6 +10,18 @@ use crate::config::{
     save_config, save_tokens, CalType, CalendarEntry, Config, EventFormMode, GoogleTokens, load_tokens,
 };
 use crate::oauth::{self, DeviceCodeResponse};
+
+pub enum AppMsg {
+    ReloadDone {
+        events: Vec<CalEvent>,
+        day_map: HashMap<NaiveDate, Vec<usize>>,
+        status: String,
+        error: Option<String>,
+    },
+    CrudDone,
+    CrudError(String),
+    CalendarAdded(CalendarEntry),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewMode {
@@ -57,6 +70,7 @@ pub struct EventFormState {
     pub is_edit: bool,
     pub calendar_idx: usize,
     pub google_event_id: Option<String>,
+    pub event_idx: Option<usize>,
     pub title: String,
     pub date: String,
     pub start_time: String,
@@ -85,6 +99,8 @@ pub struct App {
     pub view: ViewMode,
     pub show_events: bool,
     pub status: String,
+    pub loading: bool,
+    pub loading_tick: u8,
     pub input_mode: InputMode,
     pub url_input: String,
     pub event_cursor: usize,
@@ -107,6 +123,9 @@ pub struct App {
     pub event_form: Option<EventFormState>,
     pub event_form_input: String,
     pub confirm_delete: Option<usize>,
+    // Channel for background thread messages
+    tx: mpsc::Sender<AppMsg>,
+    rx: mpsc::Receiver<AppMsg>,
 }
 
 impl App {
@@ -114,6 +133,7 @@ impl App {
         let today = Local::now().date_naive();
         let has_calendars = !config.calendars.is_empty();
         let google_tokens = load_tokens();
+        let (tx, rx) = mpsc::channel();
         App {
             config,
             events: Vec::new(),
@@ -126,6 +146,8 @@ impl App {
             } else {
                 String::from("Press c to manage calendars")
             },
+            loading: false,
+            loading_tick: 0,
             input_mode: InputMode::Normal,
             url_input: String::new(),
             event_cursor: 0,
@@ -145,6 +167,8 @@ impl App {
             event_form: None,
             event_form_input: String::new(),
             confirm_delete: None,
+            tx,
+            rx,
         }
     }
 
@@ -205,8 +229,12 @@ impl App {
             self.config.calendars.clear();
             self.status = String::from("URL cleared");
         } else {
-            if let Err(e) = Self::validate_calendar_url(&url) {
-                self.set_error(format!("Invalid URL: {e}"));
+            // Quick format-only check (no network I/O — actual fetch happens async in start_reload)
+            let after = if url.starts_with("https://") { &url[8..] } else { &url[7..] };
+            if (!url.starts_with("http://") && !url.starts_with("https://"))
+                || after.is_empty() || after.starts_with('/')
+            {
+                self.set_error("URL must start with http:// or https:// and include a hostname".into());
                 return;
             }
             if self.config.calendars.is_empty() {
@@ -227,7 +255,7 @@ impl App {
                 self.set_error(format!("Failed to save config: {e}"));
                 return;
             }
-            self.reload();
+            self.start_reload();
         }
     }
 
@@ -237,8 +265,7 @@ impl App {
         self.status = String::from("Cancelled");
     }
 
-    pub fn reload(&mut self) {
-        // Collect enabled calendar info into owned data to avoid borrow issues
+    pub fn start_reload(&mut self) {
         let enabled: Vec<(usize, CalendarEntry)> = self.config.calendars.iter().enumerate()
             .filter(|(_, c)| c.enabled)
             .map(|(i, c)| (i, c.clone()))
@@ -251,40 +278,59 @@ impl App {
             return;
         }
 
-        self.status = String::from("Loading...");
-        let mut all_events = Vec::new();
-        let mut loaded = 0usize;
-        let mut errors = Vec::new();
+        if self.loading {
+            return;
+        }
 
-        for (cal_idx, cal) in &enabled {
-            let events_result = match cal.cal_type {
-                CalType::Ics => {
-                    fetch_ics(&cal.url).map(|raw| parse_ics(&raw))
-                }
-                CalType::Google => self.fetch_google_calendar(cal),
-            };
-
-            match events_result {
-                Ok(mut events) => {
-                    for ev in &mut events {
-                        ev.calendar_id = *cal_idx;
+        // Pre-fetch tokens for all Google accounts synchronously (fast if not expired)
+        let mut tokens: HashMap<String, String> = HashMap::new();
+        let mut token_errors: Vec<String> = Vec::new();
+        for (_, cal) in &enabled {
+            if cal.cal_type == CalType::Google {
+                if let Some(account) = cal.google_account.as_deref() {
+                    if !tokens.contains_key(account) {
+                        match self.get_access_token(account) {
+                            Ok(tok) => { tokens.insert(account.to_string(), tok); }
+                            Err(e) => token_errors.push(format!("{}: {e}", cal.name)),
+                        }
                     }
-                    loaded += events.len();
-                    all_events.extend(events);
-                }
-                Err(e) => {
-                    errors.push(format!("{}: {e}", cal.name));
                 }
             }
         }
 
-        self.events = all_events;
-        self.day_map = events_by_day(&self.events);
+        self.loading = true;
+        self.status = String::from("Loading...");
 
-        if errors.is_empty() {
-            self.status = format!("Loaded {} events from {} calendars", loaded, enabled.len());
-        } else {
-            self.set_error(format!("Loaded {} events; errors: {}", loaded, errors.join(", ")));
+        let tx = self.tx.clone();
+        let initial_errors = if token_errors.is_empty() { None } else { Some(token_errors.join("; ")) };
+        std::thread::spawn(move || do_reload(enabled, tokens, tx, initial_errors));
+    }
+
+    pub fn handle_messages(&mut self) {
+        loop {
+            match self.rx.try_recv() {
+                Ok(AppMsg::ReloadDone { events, day_map, status, error }) => {
+                    self.events = events;
+                    self.day_map = day_map;
+                    self.status = status;
+                    self.loading = false;
+                    self.loading_tick = 0;
+                    if let Some(e) = error { self.set_error(e); }
+                }
+                Ok(AppMsg::CrudDone) => {
+                    self.start_reload();
+                }
+                Ok(AppMsg::CrudError(e)) => {
+                    self.set_error(e);
+                    self.start_reload();
+                }
+                Ok(AppMsg::CalendarAdded(entry)) => {
+                    self.config.calendars.push(entry);
+                    let _ = save_config(&self.config);
+                    self.start_reload();
+                }
+                Err(_) => break,
+            }
         }
     }
 
@@ -315,16 +361,6 @@ impl App {
         }
     }
 
-    fn fetch_google_calendar(&mut self, cal: &CalendarEntry) -> Result<Vec<CalEvent>, String> {
-        let account = cal.google_account.as_deref()
-            .ok_or("Google calendar missing google_account")?;
-        let cal_id = cal.calendar_id.as_deref()
-            .ok_or("Google calendar missing calendar_id")?;
-
-        let access_token = self.get_access_token(account)?;
-        google::fetch_google_events(&access_token, cal_id)
-    }
-
     // ── Event CRUD methods ────────────────────────────────────────────────
 
     pub fn start_create_event(&mut self) {
@@ -345,6 +381,7 @@ impl App {
             is_edit: false,
             calendar_idx: cal_idx,
             google_event_id: None,
+            event_idx: None,
             title: String::new(),
             date: self.cursor.format("%Y-%m-%d").to_string(),
             start_time: String::new(),
@@ -378,6 +415,7 @@ impl App {
             is_edit: true,
             calendar_idx: cal_idx,
             google_event_id: ev.google_event_id.clone(),
+            event_idx: Some(event_idx),
             title: ev.summary.clone(),
             date: ev.start.format("%Y-%m-%d").to_string(),
             start_time: ev.start_time.map(|t| t.format("%H:%M").to_string()).unwrap_or_default(),
@@ -393,6 +431,7 @@ impl App {
             None => return,
         };
         let input = self.event_form_input.trim().to_string();
+        let mut do_submit = false;
 
         // In edit mode, Enter saves current field and submits immediately
         if form.is_edit {
@@ -466,11 +505,14 @@ impl App {
             EventFormMode::Description => {
                 form.description = input;
                 self.event_form_input.clear();
-                form.mode = EventFormMode::Confirm;
+                do_submit = true; // skip Confirm for creates
             }
             EventFormMode::Confirm => {
-                self.submit_event_form();
+                do_submit = true;
             }
+        }
+        if do_submit {
+            self.submit_event_form();
         }
     }
 
@@ -535,8 +577,6 @@ impl App {
             Some(f) => f,
             None => return,
         };
-        self.input_mode = InputMode::Normal;
-        self.popup = None;
 
         let start_date = match chrono::NaiveDate::parse_from_str(&form.date, "%Y-%m-%d") {
             Ok(d) => d,
@@ -602,29 +642,69 @@ impl App {
                     return;
                 }
             };
-            match google::update_google_event(
-                &access_token, &cal_id, &event_id,
-                &form.title, &form.description,
-                start_date, start_time, start_date, end_time,
-            ) {
-                Ok(()) => {
-                    self.status = "Event updated".into();
-                    self.reload();
+
+            // Optimistic update: apply changes locally before API call
+            if let Some(idx) = form.event_idx {
+                if let Some(ev) = self.events.get_mut(idx) {
+                    ev.summary = form.title.clone();
+                    ev.start = start_date;
+                    ev.start_time = start_time;
+                    ev.end_time = end_time;
+                    ev.description = if form.description.is_empty() { None } else { Some(form.description.clone()) };
                 }
-                Err(e) => self.set_error(format!("Failed to update event: {e}")),
+                self.day_map = events_by_day(&self.events);
             }
+
+            self.input_mode = InputMode::Normal;
+            self.popup = None;
+            self.status = "Saving…".into();
+
+            let tx = self.tx.clone();
+            let title = form.title.clone();
+            let description = form.description.clone();
+            std::thread::spawn(move || {
+                match google::update_google_event(
+                    &access_token, &cal_id, &event_id,
+                    &title, &description,
+                    start_date, start_time, start_date, end_time,
+                ) {
+                    Ok(()) => { let _ = tx.send(AppMsg::CrudDone); }
+                    Err(e) => { let _ = tx.send(AppMsg::CrudError(format!("Failed to update event: {e}"))); }
+                }
+            });
         } else {
-            match google::create_google_event(
-                &access_token, &cal_id,
-                &form.title, &form.description,
-                start_date, start_time, start_date, end_time,
-            ) {
-                Ok(_id) => {
-                    self.status = "Event created".into();
-                    self.reload();
+            // Optimistic create: add local placeholder event immediately
+            let local_event = CalEvent {
+                summary: form.title.clone(),
+                start: start_date,
+                end: start_date,
+                start_time,
+                end_time,
+                description: if form.description.is_empty() { None } else { Some(form.description.clone()) },
+                location: None,
+                calendar_id: form.calendar_idx,
+                google_event_id: None,
+            };
+            self.events.push(local_event);
+            self.day_map = events_by_day(&self.events);
+
+            self.input_mode = InputMode::Normal;
+            self.popup = None;
+            self.status = "Saving…".into();
+
+            let tx = self.tx.clone();
+            let title = form.title.clone();
+            let description = form.description.clone();
+            std::thread::spawn(move || {
+                match google::create_google_event(
+                    &access_token, &cal_id,
+                    &title, &description,
+                    start_date, start_time, start_date, end_time,
+                ) {
+                    Ok(_id) => { let _ = tx.send(AppMsg::CrudDone); }
+                    Err(e) => { let _ = tx.send(AppMsg::CrudError(format!("Failed to create event: {e}"))); }
                 }
-                Err(e) => self.set_error(format!("Failed to create event: {e}")),
-            }
+            });
         }
     }
 
@@ -692,14 +772,19 @@ impl App {
             }
         };
 
-        match google::delete_google_event(&access_token, &cal_id, &google_event_id) {
-            Ok(()) => {
-                self.status = "Event deleted".into();
-                self.close_popup();
-                self.reload();
+        // Optimistic delete: remove from local state immediately
+        self.events.remove(event_idx);
+        self.day_map = events_by_day(&self.events);
+        self.close_popup();
+        self.status = "Deleting…".into();
+
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            match google::delete_google_event(&access_token, &cal_id, &google_event_id) {
+                Ok(()) => { let _ = tx.send(AppMsg::CrudDone); }
+                Err(e) => { let _ = tx.send(AppMsg::CrudError(format!("Failed to delete event: {e}"))); }
             }
-            Err(e) => self.set_error(format!("Failed to delete event: {e}")),
-        }
+        });
     }
 
     pub fn cancel_delete(&mut self) {
@@ -725,7 +810,7 @@ impl App {
         if let Some(cal) = self.config.calendars.get_mut(idx) {
             cal.enabled = !cal.enabled;
             let _ = save_config(&self.config);
-            self.reload();
+            self.start_reload();
         }
     }
 
@@ -736,10 +821,11 @@ impl App {
                 self.cal_manager_cursor = self.config.calendars.len().saturating_sub(1);
             }
             let _ = save_config(&self.config);
-            self.reload();
+            self.start_reload();
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn validate_calendar_url(url: &str) -> Result<(), String> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err("URL must start with http:// or https://".into());
@@ -763,18 +849,30 @@ impl App {
     }
 
     pub fn add_calendar(&mut self, name: String, url: String, color: String) {
-        self.config.calendars.push(CalendarEntry {
-            name,
-            url,
-            color,
-            enabled: true,
-            cal_type: CalType::Ics,
-            google_account: None,
-            calendar_id: None,
-            access_role: None,
+        self.loading = true;
+        self.status = "Validating URL…".into();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<CalendarEntry, String> {
+                let raw = fetch_ics(&url)?;
+                let events = parse_ics(&raw);
+                if events.is_empty() && !raw.contains("VCALENDAR") {
+                    return Err("URL does not appear to serve a valid ICS calendar".into());
+                }
+                Ok(CalendarEntry {
+                    name, url, color,
+                    enabled: true,
+                    cal_type: CalType::Ics,
+                    google_account: None,
+                    calendar_id: None,
+                    access_role: None,
+                })
+            })();
+            match result {
+                Ok(entry) => { let _ = tx.send(AppMsg::CalendarAdded(entry)); }
+                Err(e) => { let _ = tx.send(AppMsg::CrudError(format!("Invalid calendar URL: {e}"))); }
+            }
         });
-        let _ = save_config(&self.config);
-        self.reload();
     }
 
     pub fn rename_calendar(&mut self, idx: usize, name: String) {
@@ -922,7 +1020,7 @@ impl App {
         });
         let _ = save_config(&self.config);
         self.status = format!("Added '{}'", cal_info.display_name);
-        self.reload();
+        self.start_reload();
     }
 
     fn reset_oauth_state(&mut self) {
@@ -941,8 +1039,53 @@ impl App {
 
     pub fn finish_oauth_pick(&mut self) {
         self.reset_oauth_state();
-        self.reload();
+        self.start_reload();
     }
+}
+
+fn do_reload(
+    calendars: Vec<(usize, CalendarEntry)>,
+    tokens: HashMap<String, String>,
+    tx: mpsc::Sender<AppMsg>,
+    initial_errors: Option<String>,
+) {
+    let mut all_events = Vec::new();
+    let mut loaded = 0usize;
+    let mut errors: Vec<String> = initial_errors.map(|e| vec![e]).unwrap_or_default();
+
+    for (cal_idx, cal) in &calendars {
+        let events_result = match cal.cal_type {
+            CalType::Ics => fetch_ics(&cal.url).map(|raw| parse_ics(&raw)),
+            CalType::Google => {
+                let account = cal.google_account.as_deref().unwrap_or("");
+                match tokens.get(account) {
+                    Some(token) => {
+                        let cal_id = cal.calendar_id.as_deref().unwrap_or("");
+                        google::fetch_google_events(token, cal_id)
+                    }
+                    None => Err(format!("{}: no access token", cal.name)),
+                }
+            }
+        };
+
+        match events_result {
+            Ok(mut events) => {
+                for ev in &mut events {
+                    ev.calendar_id = *cal_idx;
+                }
+                loaded += events.len();
+                all_events.extend(events);
+            }
+            Err(e) => errors.push(format!("{}: {e}", cal.name)),
+        }
+    }
+
+    let day_map = events_by_day(&all_events);
+    let cal_count = calendars.len();
+    let status = format!("Loaded {} events from {} calendars", loaded, cal_count);
+    let error = if errors.is_empty() { None } else { Some(format!("Errors: {}", errors.join("; "))) };
+
+    let _ = tx.send(AppMsg::ReloadDone { events: all_events, day_map, status, error });
 }
 
 #[cfg(test)]

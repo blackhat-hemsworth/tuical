@@ -36,9 +36,7 @@ fn main() -> io::Result<()> {
     let config = load_config();
     let mut app = App::new(config);
 
-    if !app.config.calendars.is_empty() {
-        app.reload();
-    }
+    app.start_reload();
 
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -77,9 +75,12 @@ fn run_loop(
     app: &mut App,
 ) -> io::Result<()> {
     loop {
+        app.handle_messages();
         terminal.draw(|f| ui(f, app))?;
 
-        let timeout = if app.cal_manager_mode == CalManagerMode::OAuthPolling {
+        let timeout = if app.loading {
+            Duration::from_millis(150)
+        } else if app.cal_manager_mode == CalManagerMode::OAuthPolling {
             let interval = app.oauth_device_code.as_ref().map(|dc| dc.interval).unwrap_or(5);
             Duration::from_secs(interval)
         } else {
@@ -306,17 +307,17 @@ fn run_loop(
                                 KeyCode::Enter => {
                                     let url = app.cal_manager_input.trim().to_string();
                                     if !url.is_empty() {
-                                        match App::validate_calendar_url(&url) {
-                                            Ok(()) => {
-                                                app.cal_manager_pending_url = url;
-                                                app.cal_manager_input.clear();
-                                                app.cal_manager_mode = CalManagerMode::AddingName;
-                                                app.status = String::from("URL verified — enter a name for this calendar");
-                                            }
-                                            Err(e) => {
-                                                app.set_error(format!("Invalid URL: {e}"));
-                                                // Stay in AddingUrl so user can fix it
-                                            }
+                                        // Quick format check only — full validation happens async in add_calendar()
+                                        let after = if url.starts_with("https://") { &url[8..] } else { &url[7..] };
+                                        let format_ok = (url.starts_with("http://") || url.starts_with("https://"))
+                                            && !after.is_empty() && !after.starts_with('/');
+                                        if format_ok {
+                                            app.cal_manager_pending_url = url;
+                                            app.cal_manager_input.clear();
+                                            app.cal_manager_mode = CalManagerMode::AddingName;
+                                            app.status = String::from("Enter a name for this calendar");
+                                        } else {
+                                            app.set_error("URL must start with http:// or https:// and include a hostname".into());
                                         }
                                     }
                                 }
@@ -461,9 +462,13 @@ fn run_loop(
                     _ => {}
                 }
             }
-        } else if app.cal_manager_mode == CalManagerMode::OAuthPolling {
-            // Poll timeout expired — do an OAuth poll
-            app.poll_oauth_token();
+        } else {
+            if app.loading {
+                app.loading_tick = app.loading_tick.wrapping_add(1);
+            }
+            if app.cal_manager_mode == CalManagerMode::OAuthPolling {
+                app.poll_oauth_token();
+            }
         }
     }
     Ok(())

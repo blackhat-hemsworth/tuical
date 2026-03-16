@@ -25,6 +25,8 @@ use styles::{
     CAL_PANE_PCT, EVENT_PANE_PCT, style_hint, style_url_input_label,
 };
 
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 pub fn ui(f: &mut Frame, app: &App) {
     let today = Local::now().date_naive();
 
@@ -141,10 +143,18 @@ pub fn ui(f: &mut Frame, app: &App) {
                 CalManagerMode::OAuthPolling => "  Waiting for authorization...  [Esc] cancel",
                 CalManagerMode::OAuthPickCalendar => "  [Enter/Space] add  [Esc] done",
             };
-            let status_line = Line::from(vec![
-                Span::raw(&app.status),
-                Span::styled(hint, style_hint()),
-            ]);
+            let status_line = if app.loading {
+                let frame = SPINNER[app.loading_tick as usize % SPINNER.len()];
+                Line::from(vec![
+                    Span::styled(format!("{} Loading… ", frame), style_hint()),
+                    Span::styled(hint, style_hint()),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw(&app.status),
+                    Span::styled(hint, style_hint()),
+                ])
+            };
             f.render_widget(Paragraph::new(status_line), status_area);
 
             // Dim background
@@ -162,7 +172,12 @@ pub fn ui(f: &mut Frame, app: &App) {
                     "  [o] open event  [a] new event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
                 }
             };
-            let status_line = if app.status.is_empty() {
+            let status_line = if app.loading {
+                let frame = SPINNER[app.loading_tick as usize % SPINNER.len()];
+                Line::from(vec![
+                    Span::styled(format!("{} Loading… ", frame), style_hint()),
+                ])
+            } else if app.status.is_empty() {
                 Line::from(Span::styled(hint.trim_start(), style_hint()))
             } else {
                 Line::from(vec![

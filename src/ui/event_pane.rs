@@ -8,7 +8,9 @@ use ratatui::{
 use crate::app::App;
 
 use super::calendar_view::event_color_style;
-use super::styles::{style_event_text, style_header_label, style_selected_item, PANE_TIME_PREFIX_W};
+use super::styles::{
+    PANE_TIME_PREFIX_W, style_event_text, style_header_label, style_selected_item,
+};
 use super::utils::{format_time_range, month_name, wrap_text};
 
 pub fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
@@ -53,10 +55,24 @@ pub fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
             };
 
             // Build summary with calendar name prefix
-            let cal_prefix = app.config.calendars.get(ev.calendar_id)
+            let cal_prefix = app
+                .config
+                .calendars
+                .get(ev.calendar_id)
                 .map(|c| format!("[{}] ", c.name))
                 .unwrap_or_default();
-            let full_summary = format!("{}{}", cal_prefix, ev.summary);
+            let writable_marker = if app
+                .config
+                .calendars
+                .get(ev.calendar_id)
+                .map(|c| c.is_writable())
+                .unwrap_or(false)
+            {
+                "✎"
+            } else {
+                ""
+            };
+            let full_summary = format!("{}{}{}", writable_marker, cal_prefix, ev.summary);
 
             let text_style = if is_selected {
                 style_selected_item()

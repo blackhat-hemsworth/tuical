@@ -1,3 +1,4 @@
+use chrono::Timelike;
 use ratatui::{
     Frame,
     style::{Color, Modifier, Style},
@@ -77,6 +78,18 @@ pub fn render_popup(f: &mut Frame, app: &App, popup: &PopupState) {
 
     // Build text lines
     let mut lines: Vec<Line> = Vec::new();
+
+    // Time / date line
+    let time_str = match (ev.start_time, ev.end_time) {
+        (Some(s), Some(e)) => format!(
+            "{:02}:{:02}–{:02}:{:02}",
+            s.hour(), s.minute(), e.hour(), e.minute()
+        ),
+        (Some(s), None) => format!("{:02}:{:02}", s.hour(), s.minute()),
+        (None, _) => "All day".to_string(),
+    };
+    lines.push(Line::from(Span::styled(time_str, style_event_text())));
+    lines.push(Line::from(""));
 
     if let Some(loc) = &ev.location {
         lines.push(Line::from(Span::styled(
