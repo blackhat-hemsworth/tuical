@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
-use crate::app::App;
+use crate::app::{App, glyph_for_color};
 
 use super::calendar_view::event_color_style;
 use super::styles::{
@@ -59,7 +59,7 @@ pub fn render_event_pane(f: &mut Frame, app: &App, area: Rect) {
                 .config
                 .calendars
                 .get(ev.calendar_id)
-                .map(|c| format!("[{}] ", c.name))
+                .map(|c| format!("[{} {}] ", glyph_for_color(&c.color), c.name))
                 .unwrap_or_default();
             let writable_marker = if app
                 .config

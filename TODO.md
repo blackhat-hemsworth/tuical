@@ -13,8 +13,6 @@
 
 ## Aesthetic
 
-- block icons or something to show events on monthly view??
-
 ## Backlog
 
 - delete calendars

@@ -401,6 +401,7 @@ fn run_loop(
                     KeyCode::Char('a') => app.start_create_event(),
                     KeyCode::Char('r') => app.start_url_input(),
                     KeyCode::Char('c') => app.open_calendar_manager(),
+                    KeyCode::Char('g') => app.compact_month = !app.compact_month,
                     KeyCode::Char('o') => {
                         match app.view {
                             ViewMode::Week => app.open_popup(),

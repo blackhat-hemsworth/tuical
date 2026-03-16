@@ -132,7 +132,7 @@ pub fn ui(f: &mut Frame, app: &App) {
         InputMode::CalendarManager => {
             let hint = match app.cal_manager_mode {
                 CalManagerMode::Normal => {
-                    "  [Space] toggle  [a] add  [d] delete  [r] rename  [c] color  [Esc/q] close"
+                    "  [Space] toggle  [a] add  [d] delete  [r] rename  [c] color/glyph  [Esc/q] close"
                 }
                 CalManagerMode::AddingUrl => "  Type URL, then press Enter  [Esc] cancel",
                 CalManagerMode::AddingName => "  Type calendar name, then press Enter  [Esc] cancel",

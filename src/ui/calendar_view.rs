@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::App;
+use crate::app::{App, glyph_for_color};
 
 use super::styles::{
     CELL_MIN_HEIGHT, DIM_FG, SEL_BG, SEL_FG, WEEK_MAX_EVENT_LINES, WEEK_TIME_WIDTH, calendar_color,
@@ -214,37 +214,54 @@ fn render_day_cell(
             }
         }
     } else {
-        // Month view: single truncated line per event, colored by calendar
+        // Month view
         let avail_lines = cell_inner.height.saturating_sub(1) as usize;
-        for &idx in event_indices.iter().take(avail_lines) {
-            let summary = &app.events[idx].summary;
-            let ev_style = event_color_style(app, idx);
-            let is_writable = app
-                .config
-                .calendars
-                .get(app.events[idx].calendar_id)
-                .map(|c| c.is_writable())
-                .unwrap_or(false);
-            let max_w = cell_inner.width.saturating_sub(4) as usize; // 2 prefix + 1 space + 1 pad
-            let truncated = if summary.len() > max_w {
-                format!("{}…", &summary[..max_w.saturating_sub(1)])
-            } else {
-                summary.clone()
-            };
-            let prefix_span = if is_writable {
-                Span::styled("✎", ev_style)
-            } else {
-                Span::raw("")
-            };
-            lines.push(Line::from(vec![
-                prefix_span,
-                Span::styled(truncated, ev_style),
-            ]));
-        }
-        if event_indices.len() > avail_lines && avail_lines > 0 {
-            let extra = event_indices.len() - avail_lines + 1;
-            if let Some(last) = lines.last_mut() {
-                *last = Line::from(Span::styled(format!(" +{extra} more"), style_event_text()));
+        if app.compact_month {
+            // Compact mode: one line of glyphs, each colored by calendar
+            if !event_indices.is_empty() {
+                let glyph_spans: Vec<Span> = event_indices
+                    .iter()
+                    .map(|&idx| {
+                        let cal = app.config.calendars.get(app.events[idx].calendar_id);
+                        let color = cal.map(|c| calendar_color(&c.color)).unwrap_or(DIM_FG);
+                        let glyph = cal.map(|c| glyph_for_color(&c.color)).unwrap_or("●");
+                        Span::styled(glyph.to_string(), Style::default().fg(color))
+                    })
+                    .collect();
+                lines.push(Line::from(glyph_spans));
+            }
+        } else {
+            // Normal mode: one truncated title line per event, colored by calendar
+            for &idx in event_indices.iter().take(avail_lines) {
+                let summary = &app.events[idx].summary;
+                let ev_style = event_color_style(app, idx);
+                let is_writable = app
+                    .config
+                    .calendars
+                    .get(app.events[idx].calendar_id)
+                    .map(|c| c.is_writable())
+                    .unwrap_or(false);
+                let max_w = cell_inner.width.saturating_sub(4) as usize; // 2 prefix + 1 space + 1 pad
+                let truncated = if summary.len() > max_w {
+                    format!("{}…", &summary[..max_w.saturating_sub(1)])
+                } else {
+                    summary.clone()
+                };
+                let prefix_span = if is_writable {
+                    Span::styled("✎", ev_style)
+                } else {
+                    Span::raw("")
+                };
+                lines.push(Line::from(vec![
+                    prefix_span,
+                    Span::styled(truncated, ev_style),
+                ]));
+            }
+            if event_indices.len() > avail_lines && avail_lines > 0 {
+                let extra = event_indices.len() - avail_lines + 1;
+                if let Some(last) = lines.last_mut() {
+                    *last = Line::from(Span::styled(format!(" +{extra} more"), style_event_text()));
+                }
             }
         }
     }

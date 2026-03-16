@@ -60,7 +60,7 @@ pub fn render_popup(f: &mut Frame, app: &App, popup: &PopupState) {
     f.render_widget(Clear, area);
 
     let cal_label = app.config.calendars.get(ev.calendar_id)
-        .map(|c| format!(" [{}]", c.name))
+        .map(|c| format!(" [{} {}]", glyph_for_color(&c.color), c.name))
         .unwrap_or_default();
 
     let title_left = format!(

@@ -110,6 +110,7 @@ pub struct App {
     pub cursor: NaiveDate,
     pub view: ViewMode,
     pub show_events: bool,
+    pub compact_month: bool,
     pub status: String,
     pub loading: bool,
     pub loading_tick: u8,
@@ -153,6 +154,7 @@ impl App {
             cursor: today,
             view: ViewMode::Month,
             show_events: true,
+            compact_month: false,
             status: if has_calendars {
                 String::from("Loading...")
             } else {

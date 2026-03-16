@@ -130,11 +130,6 @@ pub fn render_calendar_manager(f: &mut Frame, app: &App) {
                 color_spans.push(Span::styled(label, style));
             }
             lines.push(Line::from(color_spans));
-            let selected_name = COLOR_PALETTE[app.cal_manager_color_idx];
-            lines.push(Line::from(Span::styled(
-                format!("  {}", selected_name),
-                style_hint(),
-            )));
         }
         CalManagerMode::ChoosingType => {
             lines.push(Line::from(""));
