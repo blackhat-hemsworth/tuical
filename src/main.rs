@@ -99,12 +99,40 @@ fn run_loop(
                     continue;
                 }
 
+                // ── Event Form mode ────────────────────────────────────────────
+                if app.input_mode == InputMode::EventForm {
+                    match key.code {
+                        KeyCode::Enter => app.advance_event_form(),
+                        KeyCode::Esc => app.cancel_event_form(),
+                        KeyCode::Backspace => { app.event_form_input.pop(); }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.event_form_input.clear();
+                        }
+                        KeyCode::Char(c) => app.event_form_input.push(c),
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 // ── Popup mode ────────────────────────────────────────────────
                 if app.input_mode == InputMode::Popup {
+                    // Delete confirmation takes priority
+                    if app.confirm_delete.is_some() {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Enter => app.confirm_delete_event(),
+                            _ => app.cancel_delete(),
+                        }
+                        continue;
+                    }
                     let close = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
                     if close {
                         app.close_popup();
                         continue;
+                    }
+                    match key.code {
+                        KeyCode::Char('e') => { app.start_edit_event(); continue; }
+                        KeyCode::Char('d') => { app.start_delete_event(); continue; }
+                        _ => {}
                     }
                     if let Some(popup) = app.popup.as_mut() {
                         match key.code {
@@ -371,6 +399,7 @@ fn run_loop(
                 app.clear_status();
                 match key.code {
                     KeyCode::Char('q') => break,
+                    KeyCode::Char('a') => app.start_create_event(),
                     KeyCode::Char('r') => app.start_url_input(),
                     KeyCode::Char('c') => app.open_calendar_manager(),
                     KeyCode::Char('o') => {

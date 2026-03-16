@@ -40,6 +40,16 @@ pub struct GoogleTokens {
     pub expires_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub enum EventFormMode {
+    Title,
+    Date,
+    StartTime,
+    EndTime,
+    Description,
+    Confirm,
+}
+
 pub fn config_path() -> PathBuf {
     let base = config_dir();
     base.join("caltui").join("config.toml")

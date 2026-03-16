@@ -8,6 +8,7 @@ use ratatui::{
 };
 
 use crate::app::{App, CalManagerMode, InputMode, PopupState, ViewMode, COLOR_PALETTE};
+use crate::config::EventFormMode;
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 // Edit these constants to change the visual appearance of the TUI.
@@ -136,13 +137,39 @@ pub fn ui(f: &mut Frame, app: &App) {
             ]);
             f.render_widget(Paragraph::new(input_line), status_area);
         }
+        InputMode::EventForm => {
+            let hint = if let Some(form) = &app.event_form {
+                match form.mode {
+                    EventFormMode::Title => "  Enter title  [Esc] cancel",
+                    EventFormMode::Date => "  Enter date (YYYY-MM-DD)  [Esc] cancel",
+                    EventFormMode::StartTime => "  Enter start time (HH:MM) or empty for all-day  [Esc] cancel",
+                    EventFormMode::EndTime => "  Enter end time (HH:MM) or empty  [Esc] cancel",
+                    EventFormMode::Description => "  Enter description  [Esc] cancel",
+                    EventFormMode::Confirm => "  [Enter] save  [Esc] cancel",
+                }
+            } else {
+                ""
+            };
+            let status_line = Line::from(Span::styled(hint.trim_start(), style_hint()));
+            f.render_widget(Paragraph::new(status_line), status_area);
+
+            // Dim background
+            let area = f.area();
+            f.buffer_mut()
+                .set_style(area, Style::default().add_modifier(Modifier::DIM));
+            if let Some(form) = &app.event_form {
+                render_event_form(f, app, form);
+            }
+        }
         InputMode::Popup => {
             if let Some(popup) = &app.popup {
-                let hint = if popup.links.is_empty() {
-                    "  [↑/↓] scroll  [Esc/q] close".to_string()
+                let hint = if app.confirm_delete.is_some() {
+                    "  [y/Enter] confirm delete  [any key] cancel".to_string()
+                } else if popup.links.is_empty() {
+                    "  [↑/↓] scroll  [e] edit  [d] delete  [Esc/q] close".to_string()
                 } else {
                     format!(
-                        "  [↑/↓] scroll  [j/k] select link ({}/{})  [o] open link  [Esc/q] close",
+                        "  [↑/↓] scroll  [j/k] select link ({}/{})  [o] open link  [e] edit  [d] delete  [Esc/q] close",
                         popup.link_idx + 1,
                         popup.links.len()
                     )
@@ -156,6 +183,10 @@ pub fn ui(f: &mut Frame, app: &App) {
                 .set_style(area, Style::default().add_modifier(Modifier::DIM));
             if let Some(popup) = &app.popup {
                 render_popup(f, app, popup);
+            }
+            // Delete confirmation overlay
+            if let Some(event_idx) = app.confirm_delete {
+                render_delete_confirm(f, app, event_idx);
             }
         }
         InputMode::CalendarManager => {
@@ -187,10 +218,10 @@ pub fn ui(f: &mut Frame, app: &App) {
         InputMode::Normal => {
             let hint = match app.view {
                 ViewMode::Month => {
-                    "  [j/k] select event  [o] open  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [r] set URL  [q] quit"
+                    "  [j/k] select event  [o] open  [a] new event  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [r] set URL  [q] quit"
                 }
                 ViewMode::Week => {
-                    "  [o] open event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
+                    "  [o] open event  [a] new event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
                 }
             };
             let status_line = if app.status.is_empty() {
@@ -243,6 +274,103 @@ fn render_error_popup(f: &mut Frame, err_msg: &str) {
         Paragraph::new(Text::from(lines)).wrap(ratatui::widgets::Wrap { trim: false }),
         inner,
     );
+}
+
+fn render_event_form(f: &mut Frame, app: &App, form: &crate::app::EventFormState) {
+    let area = f.area();
+    let width = (area.width / 2).max(40).min(area.width);
+    let height = 14u16.min(area.height);
+    let popup_area = centered_rect(width, height, area);
+    f.render_widget(Clear, popup_area);
+
+    let cal_name = app.config.calendars.get(form.calendar_idx)
+        .map(|c| c.name.as_str())
+        .unwrap_or("Calendar");
+    let cal_color = app.config.calendars.get(form.calendar_idx)
+        .map(|c| calendar_color(&c.color))
+        .unwrap_or(Color::White);
+    let title = if form.is_edit {
+        format!(" Edit Event — {} ", cal_name)
+    } else {
+        format!(" New Event — {} ", cal_name)
+    };
+    let block = Block::default().borders(Borders::ALL).title(title.as_str());
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("  ● ", Style::default().fg(cal_color)),
+        Span::styled(cal_name, style_url_input_label()),
+    ]));
+
+    let fields: &[(&str, &str, EventFormMode)] = &[
+        ("Title", &form.title, EventFormMode::Title),
+        ("Date", &form.date, EventFormMode::Date),
+        ("Start", &form.start_time, EventFormMode::StartTime),
+        ("End", &form.end_time, EventFormMode::EndTime),
+        ("Desc", &form.description, EventFormMode::Description),
+    ];
+
+    for &(label, value, field_mode) in fields {
+        if form.mode == field_mode {
+            // Active input field
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {}: ", label), style_url_input_label()),
+                Span::raw(&app.event_form_input),
+                Span::styled("█", style_hint()),
+            ]));
+        } else if form.mode > field_mode {
+            // Completed field
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {}: ", label), style_hint()),
+                Span::styled(value.to_string(), style_hint()),
+            ]));
+        }
+        // Future fields: don't show
+    }
+
+    if form.mode == EventFormMode::Confirm {
+        // Show calendar + all fields + confirm hint
+        lines.push(Line::from(vec![
+            Span::styled("  Calendar: ", style_hint()),
+            Span::styled("● ", Style::default().fg(cal_color)),
+            Span::raw(cal_name.to_string()),
+        ]));
+        for &(label, value, _) in fields {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {}: ", label), style_hint()),
+                Span::raw(value.to_string()),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("  [Enter] save  [Esc] cancel", style_hint())));
+    }
+
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn render_delete_confirm(f: &mut Frame, app: &App, event_idx: usize) {
+    let area = f.area();
+    let width = 45u16.min(area.width);
+    let height = 5u16.min(area.height);
+    let popup_area = centered_rect(width, height, area);
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default().borders(Borders::ALL).title(" Confirm Delete ");
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let event_title = app.events.get(event_idx)
+        .map(|e| e.summary.as_str())
+        .unwrap_or("event");
+
+    let lines = vec![
+        Line::from(format!("  Delete \"{}\"?", event_title)),
+        Line::from(""),
+        Line::from(Span::styled("  [y/Enter] confirm  [any key] cancel", style_hint())),
+    ];
+    f.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

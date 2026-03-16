@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use crate::google::{self, CalendarInfo};
 use crate::calendar::{events_by_day, extract_links, fetch_ics, parse_ics, CalEvent};
 use crate::config::{
-    save_config, save_tokens, CalType, CalendarEntry, Config, GoogleTokens, load_tokens,
+    save_config, save_tokens, CalType, CalendarEntry, Config, EventFormMode, GoogleTokens, load_tokens,
 };
 use crate::oauth::{self, DeviceCodeResponse};
 
@@ -22,6 +22,7 @@ pub enum InputMode {
     EnteringUrl,
     Popup,
     CalendarManager,
+    EventForm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +52,19 @@ pub const COLOR_PALETTE: &[&str] = &[
     "light_red", "light_green", "light_blue", "light_yellow", "light_magenta", "light_cyan",
 ];
 
+pub struct EventFormState {
+    pub mode: EventFormMode,
+    pub is_edit: bool,
+    pub editing_event_idx: Option<usize>,
+    pub calendar_idx: usize,
+    pub google_event_id: Option<String>,
+    pub title: String,
+    pub date: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub description: String,
+}
+
 pub struct App {
     pub config: Config,
     pub events: Vec<CalEvent>,
@@ -77,6 +91,10 @@ pub struct App {
     pub oauth_cal_cursor: usize,
     pub google_tokens: HashMap<String, GoogleTokens>,
     pub error: Option<String>,
+    // Event form state
+    pub event_form: Option<EventFormState>,
+    pub event_form_input: String,
+    pub confirm_delete: Option<usize>,
 }
 
 impl App {
@@ -112,6 +130,9 @@ impl App {
             oauth_cal_cursor: 0,
             google_tokens,
             error: None,
+            event_form: None,
+            event_form_input: String::new(),
+            confirm_delete: None,
         }
     }
 
@@ -254,19 +275,13 @@ impl App {
         }
     }
 
-    fn fetch_google_calendar(&mut self, cal: &CalendarEntry) -> Result<Vec<CalEvent>, String> {
-        let account = cal.google_account.as_deref()
-            .ok_or("Google calendar missing google_account")?;
-        let cal_id = cal.calendar_id.as_deref()
-            .ok_or("Google calendar missing calendar_id")?;
-
+    fn get_access_token(&mut self, account: &str) -> Result<String, String> {
         let tokens = self.google_tokens.get(account)
             .ok_or(format!("No tokens for account {account} — re-authenticate via calendar manager"))?
             .clone();
 
-        // Refresh token if expired
         let now = chrono::Utc::now().timestamp();
-        let access_token = if now >= tokens.expires_at - 60 {
+        if now >= tokens.expires_at - 60 {
             match oauth::refresh_access_token(&tokens.refresh_token) {
                 Ok(new_token) => {
                     let expires_at = chrono::Utc::now().timestamp() + new_token.expires_in as i64;
@@ -278,15 +293,316 @@ impl App {
                     };
                     self.google_tokens.insert(account.to_string(), updated);
                     let _ = save_tokens(&self.google_tokens);
-                    new_token.access_token
+                    Ok(new_token.access_token)
                 }
-                Err(e) => return Err(format!("Token refresh failed: {e}")),
+                Err(e) => Err(format!("Token refresh failed: {e}")),
             }
         } else {
-            tokens.access_token.clone()
+            Ok(tokens.access_token.clone())
+        }
+    }
+
+    fn fetch_google_calendar(&mut self, cal: &CalendarEntry) -> Result<Vec<CalEvent>, String> {
+        let account = cal.google_account.as_deref()
+            .ok_or("Google calendar missing google_account")?;
+        let cal_id = cal.calendar_id.as_deref()
+            .ok_or("Google calendar missing calendar_id")?;
+
+        let access_token = self.get_access_token(account)?;
+        google::fetch_google_events(&access_token, cal_id)
+    }
+
+    // ── Event CRUD methods ────────────────────────────────────────────────
+
+    pub fn start_create_event(&mut self) {
+        // Find first enabled Google calendar
+        let google_cal = self.config.calendars.iter().enumerate().find(|(_, c)| {
+            c.enabled && c.cal_type == CalType::Google
+        });
+        let (cal_idx, _cal) = match google_cal {
+            Some(pair) => pair,
+            None => {
+                self.set_error("No Google Calendar configured — only Google Calendar events can be created".into());
+                return;
+            }
+        };
+        self.event_form_input = String::new();
+        self.event_form = Some(EventFormState {
+            mode: EventFormMode::Title,
+            is_edit: false,
+            editing_event_idx: None,
+            calendar_idx: cal_idx,
+            google_event_id: None,
+            title: String::new(),
+            date: self.cursor.format("%Y-%m-%d").to_string(),
+            start_time: String::new(),
+            end_time: String::new(),
+            description: String::new(),
+        });
+        self.input_mode = InputMode::EventForm;
+    }
+
+    pub fn start_edit_event(&mut self) {
+        let popup = match &self.popup {
+            Some(p) => p,
+            None => return,
+        };
+        let event_idx = popup.event_idx;
+        let ev = &self.events[event_idx];
+
+        if ev.google_event_id.is_none() {
+            self.set_error("This event is read-only — only Google Calendar events can be edited".into());
+            return;
+        }
+
+        let cal_idx = ev.calendar_id;
+        self.event_form_input = ev.summary.clone();
+        self.event_form = Some(EventFormState {
+            mode: EventFormMode::Title,
+            is_edit: true,
+            editing_event_idx: Some(event_idx),
+            calendar_idx: cal_idx,
+            google_event_id: ev.google_event_id.clone(),
+            title: ev.summary.clone(),
+            date: ev.start.format("%Y-%m-%d").to_string(),
+            start_time: ev.start_time.map(|t| t.format("%H:%M").to_string()).unwrap_or_default(),
+            end_time: ev.end_time.map(|t| t.format("%H:%M").to_string()).unwrap_or_default(),
+            description: ev.description.clone().unwrap_or_default(),
+        });
+        self.input_mode = InputMode::EventForm;
+    }
+
+    pub fn advance_event_form(&mut self) {
+        let form = match &mut self.event_form {
+            Some(f) => f,
+            None => return,
+        };
+        let input = self.event_form_input.trim().to_string();
+
+        match form.mode {
+            EventFormMode::Title => {
+                if input.is_empty() {
+                    self.error = Some("Title cannot be empty".into());
+                    return;
+                }
+                form.title = input;
+                self.event_form_input = form.date.clone();
+                form.mode = EventFormMode::Date;
+            }
+            EventFormMode::Date => {
+                if chrono::NaiveDate::parse_from_str(&input, "%Y-%m-%d").is_err() {
+                    self.error = Some("Invalid date format — use YYYY-MM-DD".into());
+                    return;
+                }
+                form.date = input;
+                self.event_form_input = form.start_time.clone();
+                form.mode = EventFormMode::StartTime;
+            }
+            EventFormMode::StartTime => {
+                if !input.is_empty() && chrono::NaiveTime::parse_from_str(&input, "%H:%M").is_err() {
+                    self.error = Some("Invalid time format — use HH:MM or leave empty for all-day".into());
+                    return;
+                }
+                form.start_time = input.clone();
+                if input.is_empty() {
+                    // All-day event, skip EndTime
+                    form.end_time = String::new();
+                    self.event_form_input = form.description.clone();
+                    form.mode = EventFormMode::Description;
+                } else {
+                    self.event_form_input = form.end_time.clone();
+                    form.mode = EventFormMode::EndTime;
+                }
+            }
+            EventFormMode::EndTime => {
+                if !input.is_empty() && chrono::NaiveTime::parse_from_str(&input, "%H:%M").is_err() {
+                    self.error = Some("Invalid time format — use HH:MM or leave empty".into());
+                    return;
+                }
+                form.end_time = input;
+                self.event_form_input = form.description.clone();
+                form.mode = EventFormMode::Description;
+            }
+            EventFormMode::Description => {
+                form.description = input;
+                self.event_form_input.clear();
+                form.mode = EventFormMode::Confirm;
+            }
+            EventFormMode::Confirm => {
+                self.submit_event_form();
+            }
+        }
+    }
+
+    fn submit_event_form(&mut self) {
+        let form = match self.event_form.take() {
+            Some(f) => f,
+            None => return,
+        };
+        self.input_mode = InputMode::Normal;
+        self.popup = None;
+
+        let start_date = match chrono::NaiveDate::parse_from_str(&form.date, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(_) => {
+                self.set_error("Invalid date".into());
+                return;
+            }
         };
 
-        google::fetch_google_events(&access_token, cal_id)
+        let start_time = if form.start_time.is_empty() {
+            None
+        } else {
+            match chrono::NaiveTime::parse_from_str(&form.start_time, "%H:%M") {
+                Ok(t) => Some(t),
+                Err(_) => {
+                    self.set_error("Invalid start time".into());
+                    return;
+                }
+            }
+        };
+
+        let end_time = if form.end_time.is_empty() {
+            None
+        } else {
+            chrono::NaiveTime::parse_from_str(&form.end_time, "%H:%M").ok()
+        };
+
+        let cal = match self.config.calendars.get(form.calendar_idx) {
+            Some(c) => c.clone(),
+            None => {
+                self.set_error("Calendar not found".into());
+                return;
+            }
+        };
+        let account = match cal.google_account.as_deref() {
+            Some(a) => a.to_string(),
+            None => {
+                self.set_error("Calendar missing Google account".into());
+                return;
+            }
+        };
+        let cal_id = match cal.calendar_id.as_deref() {
+            Some(id) => id.to_string(),
+            None => {
+                self.set_error("Calendar missing calendar ID".into());
+                return;
+            }
+        };
+
+        let access_token = match self.get_access_token(&account) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_error(e);
+                return;
+            }
+        };
+
+        if form.is_edit {
+            let event_id = match &form.google_event_id {
+                Some(id) => id.clone(),
+                None => {
+                    self.set_error("Missing event ID for edit".into());
+                    return;
+                }
+            };
+            match google::update_google_event(
+                &access_token, &cal_id, &event_id,
+                &form.title, &form.description,
+                start_date, start_time, start_date, end_time,
+            ) {
+                Ok(()) => {
+                    self.status = "Event updated".into();
+                    self.reload();
+                }
+                Err(e) => self.set_error(format!("Failed to update event: {e}")),
+            }
+        } else {
+            match google::create_google_event(
+                &access_token, &cal_id,
+                &form.title, &form.description,
+                start_date, start_time, start_date, end_time,
+            ) {
+                Ok(_id) => {
+                    self.status = "Event created".into();
+                    self.reload();
+                }
+                Err(e) => self.set_error(format!("Failed to create event: {e}")),
+            }
+        }
+    }
+
+    pub fn cancel_event_form(&mut self) {
+        let was_edit = self.event_form.as_ref().is_some_and(|f| f.is_edit);
+        self.event_form = None;
+        self.event_form_input.clear();
+        if was_edit && self.popup.is_some() {
+            self.input_mode = InputMode::Popup;
+        } else {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    pub fn start_delete_event(&mut self) {
+        let popup = match &self.popup {
+            Some(p) => p,
+            None => return,
+        };
+        let event_idx = popup.event_idx;
+        let ev = &self.events[event_idx];
+
+        if ev.google_event_id.is_none() {
+            self.set_error("This event is read-only — only Google Calendar events can be deleted".into());
+            return;
+        }
+        self.confirm_delete = Some(event_idx);
+    }
+
+    pub fn confirm_delete_event(&mut self) {
+        let event_idx = match self.confirm_delete.take() {
+            Some(idx) => idx,
+            None => return,
+        };
+        let ev = &self.events[event_idx];
+        let cal_idx = ev.calendar_id;
+        let google_event_id = match &ev.google_event_id {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let cal = match self.config.calendars.get(cal_idx) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let account = match cal.google_account.as_deref() {
+            Some(a) => a.to_string(),
+            None => return,
+        };
+        let cal_id = match cal.calendar_id.as_deref() {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        let access_token = match self.get_access_token(&account) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_error(e);
+                return;
+            }
+        };
+
+        match google::delete_google_event(&access_token, &cal_id, &google_event_id) {
+            Ok(()) => {
+                self.status = "Event deleted".into();
+                self.close_popup();
+                self.reload();
+            }
+            Err(e) => self.set_error(format!("Failed to delete event: {e}")),
+        }
+    }
+
+    pub fn cancel_delete(&mut self) {
+        self.confirm_delete = None;
     }
 
     // ── Calendar manager methods ─────────────────────────────────────────
@@ -550,6 +866,7 @@ mod tests {
                 end_time: Some(NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
                 description: Some("Details at https://example.com".into()),
                 location: Some("Room 1".into()),
+                google_event_id: None,
             },
             CalEvent {
                 calendar_id: 0,
@@ -560,6 +877,7 @@ mod tests {
                 end_time: None,
                 description: None,
                 location: None,
+                google_event_id: None,
             },
         ];
         app.day_map = events_by_day(&app.events);

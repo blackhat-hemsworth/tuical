@@ -58,6 +58,7 @@ struct EventsResponse {
 
 #[derive(Deserialize)]
 struct GoogleEvent {
+    id: Option<String>,
     #[serde(default)]
     summary: Option<String>,
     start: Option<EventDateTime>,
@@ -146,6 +147,7 @@ fn convert_google_event(ge: &GoogleEvent) -> Option<CalEvent> {
         end_time,
         description,
         location,
+        google_event_id: ge.id.clone(),
     })
 }
 
@@ -162,6 +164,128 @@ fn parse_event_datetime(dt: &EventDateTime) -> Option<(NaiveDate, Option<chrono:
     } else {
         None
     }
+}
+
+fn build_event_body(
+    summary: &str,
+    description: &str,
+    start_date: chrono::NaiveDate,
+    start_time: Option<chrono::NaiveTime>,
+    end_date: chrono::NaiveDate,
+    end_time: Option<chrono::NaiveTime>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "summary": summary,
+        "description": description,
+    });
+
+    if let Some(st) = start_time {
+        let offset = chrono::Local::now().offset().clone();
+        let start_dt = chrono::NaiveDateTime::new(start_date, st);
+        let start_rfc = chrono::DateTime::<chrono::FixedOffset>::from_naive_utc_and_offset(
+            start_dt - offset, offset
+        ).to_rfc3339();
+        body["start"] = serde_json::json!({"dateTime": start_rfc});
+
+        let end_t = end_time.unwrap_or(st + chrono::Duration::hours(1));
+        let actual_end_date = if end_time.is_some() && end_t <= st {
+            end_date + chrono::Duration::days(1)
+        } else {
+            end_date
+        };
+        let end_dt = chrono::NaiveDateTime::new(actual_end_date, end_t);
+        let end_rfc = chrono::DateTime::<chrono::FixedOffset>::from_naive_utc_and_offset(
+            end_dt - offset, offset
+        ).to_rfc3339();
+        body["end"] = serde_json::json!({"dateTime": end_rfc});
+    } else {
+        body["start"] = serde_json::json!({"date": start_date.format("%Y-%m-%d").to_string()});
+        let end = end_date + chrono::Duration::days(1);
+        body["end"] = serde_json::json!({"date": end.format("%Y-%m-%d").to_string()});
+    }
+
+    body
+}
+
+pub fn create_google_event(
+    access_token: &str,
+    calendar_id: &str,
+    summary: &str,
+    description: &str,
+    start_date: chrono::NaiveDate,
+    start_time: Option<chrono::NaiveTime>,
+    end_date: chrono::NaiveDate,
+    end_time: Option<chrono::NaiveTime>,
+) -> Result<String, String> {
+    let body = build_event_body(summary, description, start_date, start_time, end_date, end_time);
+    let url = format!("{}/{}/events", EVENTS_BASE, urlencoded(calendar_id));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(&url)
+        .bearer_auth(access_token)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Create event request failed: {e}"))?;
+
+    let status = resp.status();
+    let resp_body = resp.text().map_err(|e| format!("Failed to read response: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("Create event failed ({}): {}", status, resp_body));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&resp_body)
+        .map_err(|e| format!("Failed to parse response: {e}"))?;
+    Ok(parsed["id"].as_str().unwrap_or("").to_string())
+}
+
+pub fn update_google_event(
+    access_token: &str,
+    calendar_id: &str,
+    event_id: &str,
+    summary: &str,
+    description: &str,
+    start_date: chrono::NaiveDate,
+    start_time: Option<chrono::NaiveTime>,
+    end_date: chrono::NaiveDate,
+    end_time: Option<chrono::NaiveTime>,
+) -> Result<(), String> {
+    let body = build_event_body(summary, description, start_date, start_time, end_date, end_time);
+    let url = format!("{}/{}/events/{}", EVENTS_BASE, urlencoded(calendar_id), urlencoded(event_id));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .put(&url)
+        .bearer_auth(access_token)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Update event request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let resp_body = resp.text().unwrap_or_default();
+        return Err(format!("Update event failed ({}): {}", status, resp_body));
+    }
+    Ok(())
+}
+
+pub fn delete_google_event(
+    access_token: &str,
+    calendar_id: &str,
+    event_id: &str,
+) -> Result<(), String> {
+    let url = format!("{}/{}/events/{}", EVENTS_BASE, urlencoded(calendar_id), urlencoded(event_id));
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .delete(&url)
+        .bearer_auth(access_token)
+        .send()
+        .map_err(|e| format!("Delete event request failed: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() && status.as_u16() != 204 {
+        let resp_body = resp.text().unwrap_or_default();
+        return Err(format!("Delete event failed ({}): {}", status, resp_body));
+    }
+    Ok(())
 }
 
 fn urlencoded(s: &str) -> String {

@@ -13,6 +13,7 @@ pub struct CalEvent {
     pub end_time: Option<NaiveTime>,
     pub description: Option<String>,
     pub location: Option<String>,
+    pub google_event_id: Option<String>,
 }
 
 pub fn strip_html(s: &str) -> String {
@@ -151,6 +152,7 @@ pub fn parse_ics(raw: &str) -> Vec<CalEvent> {
                     end_time,
                     description: ev.get_description().map(|d| strip_html(d)),
                     location: ev.get_location().map(str::to_string),
+                    google_event_id: None,
                 });
             }
         }
@@ -359,6 +361,7 @@ END:VCALENDAR";
             end_time: None,
             description: None,
             location: None,
+            google_event_id: None,
         }];
         let map = events_by_day(&events);
         assert_eq!(map.len(), 1);
@@ -376,6 +379,7 @@ END:VCALENDAR";
             end_time: None,
             description: None,
             location: None,
+            google_event_id: None,
         }];
         let map = events_by_day(&events);
         assert_eq!(map.len(), 3); // 10, 11, 12 (end is exclusive)
@@ -398,6 +402,7 @@ END:VCALENDAR";
                 end_time: None,
                 description: None,
                 location: None,
+                google_event_id: None,
             },
             CalEvent {
                 calendar_id: 0,
@@ -408,6 +413,7 @@ END:VCALENDAR";
                 end_time: None,
                 description: None,
                 location: None,
+                google_event_id: None,
             },
         ];
         let map = events_by_day(&events);
