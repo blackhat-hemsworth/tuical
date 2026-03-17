@@ -2,8 +2,6 @@
 
 ## Technical
 
-- weekly view --> grid
-
 ## Aesthetic
 
 ## Backlog

@@ -65,6 +65,10 @@ pub fn style_header_label() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
 
+pub fn style_section_separator() -> Style {
+    Style::default().fg(DIM_FG).add_modifier(Modifier::DIM)
+}
+
 pub fn style_url_input_label() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
