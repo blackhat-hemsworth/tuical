@@ -22,7 +22,7 @@ use calendar_view::{render_month, render_week};
 use event_pane::render_event_pane;
 use modals::{render_delete_confirm, render_error_popup, render_event_form, render_popup};
 use styles::{
-    CAL_PANE_PCT, EVENT_PANE_PCT, style_hint, style_url_input_label,
+    CAL_PANE_PCT, EVENT_PANE_PCT, style_hint,
 };
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -65,14 +65,6 @@ pub fn ui(f: &mut Frame, app: &App) {
     }
 
     match app.input_mode {
-        InputMode::EnteringUrl => {
-            let input_line = Line::from(vec![
-                Span::styled("ICS URL: ", style_url_input_label()),
-                Span::raw(&app.url_input),
-                Span::styled("█", style_hint()),
-            ]);
-            f.render_widget(Paragraph::new(input_line), status_area);
-        }
         InputMode::EventForm => {
             let hint = if let Some(form) = &app.event_form {
                 if form.is_edit {
@@ -166,10 +158,10 @@ pub fn ui(f: &mut Frame, app: &App) {
         InputMode::Normal => {
             let hint = match app.view {
                 ViewMode::Month => {
-                    "  [j/k] select event  [o] open  [a] new event  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [r] set URL  [q] quit"
+                    "  [j/k] select event  [o] open  [a] new event  [m/w] month/week  [Tab] toggle sidebar  [c] calendars  [q] quit"
                 }
                 ViewMode::Week => {
-                    "  [o] open event  [a] new event  [m/w] month/week  [c] calendars  [r] set URL  [q] quit"
+                    "  [o] open event  [a] new event  [m/w] month/week  [c] calendars  [q] quit"
                 }
             };
             let status_line = if app.loading {

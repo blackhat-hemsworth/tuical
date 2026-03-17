@@ -64,12 +64,12 @@ pub enum EventFormMode {
 
 pub fn config_path() -> PathBuf {
     let base = config_dir();
-    base.join("caltui").join("config.toml")
+    base.join("TUIcal").join("config.toml")
 }
 
 pub fn tokens_path() -> PathBuf {
     let base = config_dir();
-    base.join("caltui").join("tokens.json")
+    base.join("TUIcal").join("tokens.json")
 }
 
 fn config_dir() -> PathBuf {
@@ -202,9 +202,13 @@ mod tests {
     #[test]
     fn is_writable_owner() {
         let entry = CalendarEntry {
-            name: "Test".into(), url: String::new(), color: "blue".into(),
-            enabled: true, cal_type: CalType::Google,
-            google_account: None, calendar_id: None,
+            name: "Test".into(),
+            url: String::new(),
+            color: "blue".into(),
+            enabled: true,
+            cal_type: CalType::Google,
+            google_account: None,
+            calendar_id: None,
             access_role: Some("owner".into()),
         };
         assert!(entry.is_writable());
@@ -213,9 +217,13 @@ mod tests {
     #[test]
     fn is_writable_writer() {
         let entry = CalendarEntry {
-            name: "Test".into(), url: String::new(), color: "blue".into(),
-            enabled: true, cal_type: CalType::Google,
-            google_account: None, calendar_id: None,
+            name: "Test".into(),
+            url: String::new(),
+            color: "blue".into(),
+            enabled: true,
+            cal_type: CalType::Google,
+            google_account: None,
+            calendar_id: None,
             access_role: Some("writer".into()),
         };
         assert!(entry.is_writable());
@@ -224,9 +232,13 @@ mod tests {
     #[test]
     fn is_writable_reader_returns_false() {
         let entry = CalendarEntry {
-            name: "Test".into(), url: String::new(), color: "blue".into(),
-            enabled: true, cal_type: CalType::Google,
-            google_account: None, calendar_id: None,
+            name: "Test".into(),
+            url: String::new(),
+            color: "blue".into(),
+            enabled: true,
+            cal_type: CalType::Google,
+            google_account: None,
+            calendar_id: None,
             access_role: Some("reader".into()),
         };
         assert!(!entry.is_writable());
@@ -235,9 +247,13 @@ mod tests {
     #[test]
     fn is_writable_freebusy_returns_false() {
         let entry = CalendarEntry {
-            name: "Test".into(), url: String::new(), color: "blue".into(),
-            enabled: true, cal_type: CalType::Google,
-            google_account: None, calendar_id: None,
+            name: "Test".into(),
+            url: String::new(),
+            color: "blue".into(),
+            enabled: true,
+            cal_type: CalType::Google,
+            google_account: None,
+            calendar_id: None,
             access_role: Some("freeBusyReader".into()),
         };
         assert!(!entry.is_writable());
@@ -246,9 +262,13 @@ mod tests {
     #[test]
     fn is_writable_none_google_assumes_writable() {
         let entry = CalendarEntry {
-            name: "Test".into(), url: String::new(), color: "blue".into(),
-            enabled: true, cal_type: CalType::Google,
-            google_account: None, calendar_id: None,
+            name: "Test".into(),
+            url: String::new(),
+            color: "blue".into(),
+            enabled: true,
+            cal_type: CalType::Google,
+            google_account: None,
+            calendar_id: None,
             access_role: None,
         };
         assert!(entry.is_writable());
@@ -257,9 +277,13 @@ mod tests {
     #[test]
     fn is_writable_none_ics_returns_false() {
         let entry = CalendarEntry {
-            name: "Test".into(), url: String::new(), color: "blue".into(),
-            enabled: true, cal_type: CalType::Ics,
-            google_account: None, calendar_id: None,
+            name: "Test".into(),
+            url: String::new(),
+            color: "blue".into(),
+            enabled: true,
+            cal_type: CalType::Ics,
+            google_account: None,
+            calendar_id: None,
             access_role: None,
         };
         assert!(!entry.is_writable());
@@ -282,11 +306,14 @@ mod tests {
     #[test]
     fn tokens_map_serde_roundtrip() {
         let mut map = HashMap::new();
-        map.insert("user@gmail.com".to_string(), GoogleTokens {
-            access_token: "a".into(),
-            refresh_token: "r".into(),
-            expires_at: 999,
-        });
+        map.insert(
+            "user@gmail.com".to_string(),
+            GoogleTokens {
+                access_token: "a".into(),
+                refresh_token: "r".into(),
+                expires_at: 999,
+            },
+        );
         let json = serde_json::to_string(&map).unwrap();
         let parsed: HashMap<String, GoogleTokens> = serde_json::from_str(&json).unwrap();
         assert!(parsed.contains_key("user@gmail.com"));

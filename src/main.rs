@@ -1,22 +1,28 @@
 mod app;
-mod google;
 mod calendar;
 mod config;
+mod google;
 mod oauth;
 mod ui;
 
-use std::{fs, io::{self, stdout}, time::Duration};
+use std::{
+    fs,
+    io::{self, stdout},
+    time::Duration,
+};
 
 use chrono::Duration as ChronoDuration;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::{App, CalManagerMode, InputMode, ViewMode, COLOR_PALETTE};
-use calendar::{extract_links, open_url, RsvpStatus};
+use app::{App, COLOR_PALETTE, CalManagerMode, InputMode, ViewMode};
+use calendar::{RsvpStatus, extract_links, open_url};
 use config::{config_path, load_config};
 use ui::ui;
 
@@ -28,7 +34,7 @@ fn main() -> io::Result<()> {
         }
         fs::write(
             &cfg_path,
-            "# caltui configuration\n# Add calendars with the 'c' key in the app\n",
+            "# TUIcal configuration\n# Add calendars with the 'c' key in the app\n",
         )
         .ok();
     }
@@ -60,12 +66,18 @@ fn main() -> io::Result<()> {
 /// Returns true if the key was consumed, false if the caller should handle it.
 fn handle_text_input(field: &mut String, key: &event::KeyEvent) -> bool {
     match key.code {
-        KeyCode::Backspace => { field.pop(); true }
+        KeyCode::Backspace => {
+            field.pop();
+            true
+        }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             field.clear();
             true
         }
-        KeyCode::Char(c) => { field.push(c); true }
+        KeyCode::Char(c) => {
+            field.push(c);
+            true
+        }
         _ => false,
     }
 }
@@ -81,7 +93,11 @@ fn run_loop(
         let timeout = if app.loading {
             Duration::from_millis(150)
         } else if app.cal_manager_mode == CalManagerMode::OAuthPolling {
-            let interval = app.oauth_device_code.as_ref().map(|dc| dc.interval).unwrap_or(5);
+            let interval = app
+                .oauth_device_code
+                .as_ref()
+                .map(|dc| dc.interval)
+                .unwrap_or(5);
             Duration::from_secs(interval)
         } else {
             Duration::from_secs(60)
@@ -99,16 +115,6 @@ fn run_loop(
                     continue;
                 }
 
-                // ── URL input mode ────────────────────────────────────────────
-                if app.input_mode == InputMode::EnteringUrl {
-                    match key.code {
-                        KeyCode::Enter => app.confirm_url_input(),
-                        KeyCode::Esc => app.cancel_url_input(),
-                        _ => { handle_text_input(&mut app.url_input, &key); }
-                    }
-                    continue;
-                }
-
                 // ── Event Form mode ────────────────────────────────────────────
                 if app.input_mode == InputMode::EventForm {
                     match key.code {
@@ -120,7 +126,9 @@ fn run_loop(
                         KeyCode::Down if app.event_form.as_ref().is_some_and(|f| f.is_edit) => {
                             app.event_form_next_field();
                         }
-                        _ => { handle_text_input(&mut app.event_form_input, &key); }
+                        _ => {
+                            handle_text_input(&mut app.event_form_input, &key);
+                        }
                     }
                     continue;
                 }
@@ -141,11 +149,26 @@ fn run_loop(
                         continue;
                     }
                     match key.code {
-                        KeyCode::Char('e') => { app.start_edit_event(); continue; }
-                        KeyCode::Char('d') => { app.start_delete_event(); continue; }
-                        KeyCode::Char('y') => { app.submit_rsvp(RsvpStatus::Accepted); continue; }
-                        KeyCode::Char('n') => { app.submit_rsvp(RsvpStatus::Declined); continue; }
-                        KeyCode::Char('m') => { app.submit_rsvp(RsvpStatus::Tentative); continue; }
+                        KeyCode::Char('e') => {
+                            app.start_edit_event();
+                            continue;
+                        }
+                        KeyCode::Char('d') => {
+                            app.start_delete_event();
+                            continue;
+                        }
+                        KeyCode::Char('y') => {
+                            app.submit_rsvp(RsvpStatus::Accepted);
+                            continue;
+                        }
+                        KeyCode::Char('n') => {
+                            app.submit_rsvp(RsvpStatus::Declined);
+                            continue;
+                        }
+                        KeyCode::Char('m') => {
+                            app.submit_rsvp(RsvpStatus::Tentative);
+                            continue;
+                        }
                         _ => {}
                     }
                     if let Some(popup) = app.popup.as_mut() {
@@ -163,7 +186,8 @@ fn run_loop(
                             }
                             KeyCode::Char('k') => {
                                 if !popup.links.is_empty() {
-                                    popup.link_idx = (popup.link_idx + popup.links.len() - 1) % popup.links.len();
+                                    popup.link_idx = (popup.link_idx + popup.links.len() - 1)
+                                        % popup.links.len();
                                 }
                             }
                             KeyCode::Char('h') => {
@@ -199,86 +223,80 @@ fn run_loop(
                 // ── Calendar Manager mode ─────────────────────────────────────
                 if app.input_mode == InputMode::CalendarManager {
                     match app.cal_manager_mode {
-                        CalManagerMode::Normal => {
-                            match key.code {
-                                KeyCode::Esc | KeyCode::Char('q') => {
-                                    app.close_calendar_manager();
+                        CalManagerMode::Normal => match key.code {
+                            KeyCode::Esc | KeyCode::Char('q') => {
+                                app.close_calendar_manager();
+                            }
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                if !app.config.calendars.is_empty() {
+                                    app.cal_manager_cursor =
+                                        (app.cal_manager_cursor + 1) % app.config.calendars.len();
                                 }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    if !app.config.calendars.is_empty() {
-                                        app.cal_manager_cursor = (app.cal_manager_cursor + 1) % app.config.calendars.len();
-                                    }
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                if !app.config.calendars.is_empty() {
+                                    let n = app.config.calendars.len();
+                                    app.cal_manager_cursor = (app.cal_manager_cursor + n - 1) % n;
                                 }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    if !app.config.calendars.is_empty() {
-                                        let n = app.config.calendars.len();
-                                        app.cal_manager_cursor = (app.cal_manager_cursor + n - 1) % n;
-                                    }
-                                }
-                                KeyCode::Char(' ') | KeyCode::Enter => {
+                            }
+                            KeyCode::Char(' ') | KeyCode::Enter => {
+                                let idx = app.cal_manager_cursor;
+                                app.toggle_calendar(idx);
+                            }
+                            KeyCode::Char('a') => {
+                                app.start_add_calendar();
+                            }
+                            KeyCode::Char('d') => {
+                                let idx = app.cal_manager_cursor;
+                                app.remove_calendar(idx);
+                            }
+                            KeyCode::Char('r') => {
+                                if !app.config.calendars.is_empty() {
                                     let idx = app.cal_manager_cursor;
-                                    app.toggle_calendar(idx);
+                                    app.cal_manager_input = app.config.calendars[idx].name.clone();
+                                    app.cal_manager_mode = CalManagerMode::EditingName;
                                 }
-                                KeyCode::Char('a') => {
-                                    app.start_add_calendar();
-                                }
-                                KeyCode::Char('d') => {
+                            }
+                            KeyCode::Char('c') => {
+                                if !app.config.calendars.is_empty() {
                                     let idx = app.cal_manager_cursor;
-                                    app.remove_calendar(idx);
+                                    let current_color = &app.config.calendars[idx].color;
+                                    app.cal_manager_color_idx = COLOR_PALETTE
+                                        .iter()
+                                        .position(|&c| c == current_color)
+                                        .unwrap_or(0);
+                                    app.cal_manager_mode = CalManagerMode::PickingColor;
                                 }
-                                KeyCode::Char('r') => {
-                                    if !app.config.calendars.is_empty() {
-                                        let idx = app.cal_manager_cursor;
-                                        app.cal_manager_input = app.config.calendars[idx].name.clone();
-                                        app.cal_manager_mode = CalManagerMode::EditingName;
-                                    }
-                                }
-                                KeyCode::Char('c') => {
-                                    if !app.config.calendars.is_empty() {
-                                        let idx = app.cal_manager_cursor;
-                                        let current_color = &app.config.calendars[idx].color;
-                                        app.cal_manager_color_idx = COLOR_PALETTE.iter()
-                                            .position(|&c| c == current_color)
-                                            .unwrap_or(0);
-                                        app.cal_manager_mode = CalManagerMode::PickingColor;
-                                    }
-                                }
-                                _ => {}
                             }
-                        }
-                        CalManagerMode::ChoosingType => {
-                            match key.code {
-                                KeyCode::Char('1') | KeyCode::Char('i') => {
-                                    app.choose_ics_type();
-                                }
-                                KeyCode::Char('2') | KeyCode::Char('g') => {
-                                    app.choose_google_type();
-                                }
-                                KeyCode::Esc => {
-                                    app.cal_manager_mode = CalManagerMode::Normal;
-                                }
-                                _ => {}
+                            _ => {}
+                        },
+                        CalManagerMode::ChoosingType => match key.code {
+                            KeyCode::Char('1') | KeyCode::Char('i') => {
+                                app.choose_ics_type();
                             }
-                        }
-                        CalManagerMode::OAuthShowCode => {
-                            match key.code {
-                                KeyCode::Enter => {
-                                    app.start_oauth_polling();
-                                }
-                                KeyCode::Esc => {
-                                    app.cancel_oauth();
-                                }
-                                _ => {}
+                            KeyCode::Char('2') | KeyCode::Char('g') => {
+                                app.choose_google_type();
                             }
-                        }
-                        CalManagerMode::OAuthPolling => {
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.cancel_oauth();
-                                }
-                                _ => {}
+                            KeyCode::Esc => {
+                                app.cal_manager_mode = CalManagerMode::Normal;
                             }
-                        }
+                            _ => {}
+                        },
+                        CalManagerMode::OAuthShowCode => match key.code {
+                            KeyCode::Enter => {
+                                app.start_oauth_polling();
+                            }
+                            KeyCode::Esc => {
+                                app.cancel_oauth();
+                            }
+                            _ => {}
+                        },
+                        CalManagerMode::OAuthPolling => match key.code {
+                            KeyCode::Esc => {
+                                app.cancel_oauth();
+                            }
+                            _ => {}
+                        },
                         CalManagerMode::OAuthPickCalendar => {
                             let total = app.oauth_calendars.len() + 1; // +1 for "Done" item
                             match key.code {
@@ -289,7 +307,8 @@ fn run_loop(
                                 }
                                 KeyCode::Char('k') | KeyCode::Up => {
                                     if total > 0 {
-                                        app.oauth_cal_cursor = (app.oauth_cal_cursor + total - 1) % total;
+                                        app.oauth_cal_cursor =
+                                            (app.oauth_cal_cursor + total - 1) % total;
                                     }
                                 }
                                 KeyCode::Enter | KeyCode::Char(' ') => {
@@ -311,14 +330,21 @@ fn run_loop(
                                     let url = app.cal_manager_input.trim().to_string();
                                     if !url.is_empty() {
                                         // Quick format check only — full validation happens async in add_calendar()
-                                        let after = if url.starts_with("https://") { &url[8..] } else { &url[7..] };
-                                        let format_ok = (url.starts_with("http://") || url.starts_with("https://"))
-                                            && !after.is_empty() && !after.starts_with('/');
+                                        let after = if url.starts_with("https://") {
+                                            &url[8..]
+                                        } else {
+                                            &url[7..]
+                                        };
+                                        let format_ok = (url.starts_with("http://")
+                                            || url.starts_with("https://"))
+                                            && !after.is_empty()
+                                            && !after.starts_with('/');
                                         if format_ok {
                                             app.cal_manager_pending_url = url;
                                             app.cal_manager_input.clear();
                                             app.cal_manager_mode = CalManagerMode::AddingName;
-                                            app.status = String::from("Enter a name for this calendar");
+                                            app.status =
+                                                String::from("Enter a name for this calendar");
                                         } else {
                                             app.set_error("URL must start with http:// or https:// and include a hostname".into());
                                         }
@@ -328,20 +354,28 @@ fn run_loop(
                                     app.cal_manager_input.clear();
                                     app.cal_manager_mode = CalManagerMode::Normal;
                                 }
-                                _ => { handle_text_input(&mut app.cal_manager_input, &key); }
+                                _ => {
+                                    handle_text_input(&mut app.cal_manager_input, &key);
+                                }
                             }
                         }
                         CalManagerMode::AddingName => {
                             match key.code {
                                 KeyCode::Enter => {
                                     let name = app.cal_manager_input.trim().to_string();
-                                    let name = if name.is_empty() { "Calendar".to_string() } else { name };
+                                    let name = if name.is_empty() {
+                                        "Calendar".to_string()
+                                    } else {
+                                        name
+                                    };
                                     let url = app.cal_manager_pending_url.clone();
                                     // Pick a default color based on position
-                                    let color_idx = app.config.calendars.len() % COLOR_PALETTE.len();
+                                    let color_idx =
+                                        app.config.calendars.len() % COLOR_PALETTE.len();
                                     let color = COLOR_PALETTE[color_idx].to_string();
                                     app.add_calendar(name, url, color);
-                                    app.cal_manager_cursor = app.config.calendars.len().saturating_sub(1);
+                                    app.cal_manager_cursor =
+                                        app.config.calendars.len().saturating_sub(1);
                                     app.cal_manager_input.clear();
                                     app.cal_manager_pending_url.clear();
                                     app.cal_manager_mode = CalManagerMode::Normal;
@@ -351,48 +385,49 @@ fn run_loop(
                                     app.cal_manager_pending_url.clear();
                                     app.cal_manager_mode = CalManagerMode::Normal;
                                 }
-                                _ => { handle_text_input(&mut app.cal_manager_input, &key); }
+                                _ => {
+                                    handle_text_input(&mut app.cal_manager_input, &key);
+                                }
                             }
                         }
-                        CalManagerMode::EditingName => {
-                            match key.code {
-                                KeyCode::Enter => {
-                                    let name = app.cal_manager_input.trim().to_string();
-                                    if !name.is_empty() {
-                                        let idx = app.cal_manager_cursor;
-                                        app.rename_calendar(idx, name);
-                                    }
-                                    app.cal_manager_input.clear();
-                                    app.cal_manager_mode = CalManagerMode::Normal;
-                                }
-                                KeyCode::Esc => {
-                                    app.cal_manager_input.clear();
-                                    app.cal_manager_mode = CalManagerMode::Normal;
-                                }
-                                _ => { handle_text_input(&mut app.cal_manager_input, &key); }
-                            }
-                        }
-                        CalManagerMode::PickingColor => {
-                            match key.code {
-                                KeyCode::Left => {
-                                    let n = COLOR_PALETTE.len();
-                                    app.cal_manager_color_idx = (app.cal_manager_color_idx + n - 1) % n;
-                                }
-                                KeyCode::Right => {
-                                    app.cal_manager_color_idx = (app.cal_manager_color_idx + 1) % COLOR_PALETTE.len();
-                                }
-                                KeyCode::Enter => {
+                        CalManagerMode::EditingName => match key.code {
+                            KeyCode::Enter => {
+                                let name = app.cal_manager_input.trim().to_string();
+                                if !name.is_empty() {
                                     let idx = app.cal_manager_cursor;
-                                    let color = COLOR_PALETTE[app.cal_manager_color_idx].to_string();
-                                    app.set_calendar_color(idx, color);
-                                    app.cal_manager_mode = CalManagerMode::Normal;
+                                    app.rename_calendar(idx, name);
                                 }
-                                KeyCode::Esc => {
-                                    app.cal_manager_mode = CalManagerMode::Normal;
-                                }
-                                _ => {}
+                                app.cal_manager_input.clear();
+                                app.cal_manager_mode = CalManagerMode::Normal;
                             }
-                        }
+                            KeyCode::Esc => {
+                                app.cal_manager_input.clear();
+                                app.cal_manager_mode = CalManagerMode::Normal;
+                            }
+                            _ => {
+                                handle_text_input(&mut app.cal_manager_input, &key);
+                            }
+                        },
+                        CalManagerMode::PickingColor => match key.code {
+                            KeyCode::Left => {
+                                let n = COLOR_PALETTE.len();
+                                app.cal_manager_color_idx = (app.cal_manager_color_idx + n - 1) % n;
+                            }
+                            KeyCode::Right => {
+                                app.cal_manager_color_idx =
+                                    (app.cal_manager_color_idx + 1) % COLOR_PALETTE.len();
+                            }
+                            KeyCode::Enter => {
+                                let idx = app.cal_manager_cursor;
+                                let color = COLOR_PALETTE[app.cal_manager_color_idx].to_string();
+                                app.set_calendar_color(idx, color);
+                                app.cal_manager_mode = CalManagerMode::Normal;
+                            }
+                            KeyCode::Esc => {
+                                app.cal_manager_mode = CalManagerMode::Normal;
+                            }
+                            _ => {}
+                        },
                     }
                     continue;
                 }
@@ -402,21 +437,18 @@ fn run_loop(
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Char('a') => app.start_create_event(),
-                    KeyCode::Char('r') => app.start_url_input(),
                     KeyCode::Char('c') => app.open_calendar_manager(),
                     KeyCode::Char('g') => app.compact_month = !app.compact_month,
-                    KeyCode::Char('o') => {
-                        match app.view {
-                            ViewMode::Week => app.open_popup(),
-                            ViewMode::Month => {
-                                if !app.show_events {
-                                    app.show_events = true;
-                                } else {
-                                    app.open_popup();
-                                }
+                    KeyCode::Char('o') => match app.view {
+                        ViewMode::Week => app.open_popup(),
+                        ViewMode::Month => {
+                            if !app.show_events {
+                                app.show_events = true;
+                            } else {
+                                app.open_popup();
                             }
                         }
-                    }
+                    },
                     KeyCode::Char('j') => {
                         let n = app.day_event_indices().len();
                         if n > 0 {

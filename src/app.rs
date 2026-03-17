@@ -32,7 +32,6 @@ pub enum ViewMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
     Normal,
-    EnteringUrl,
     Popup,
     CalendarManager,
     EventForm,
@@ -115,7 +114,6 @@ pub struct App {
     pub loading: bool,
     pub loading_tick: u8,
     pub input_mode: InputMode,
-    pub url_input: String,
     pub event_cursor: usize,
     pub popup: Option<PopupState>,
     // Calendar manager state
@@ -163,7 +161,6 @@ impl App {
             loading: false,
             loading_tick: 0,
             input_mode: InputMode::Normal,
-            url_input: String::new(),
             event_cursor: 0,
             popup: None,
             cal_manager_cursor: 0,
@@ -230,55 +227,6 @@ impl App {
         self.input_mode = InputMode::Normal;
     }
 
-    pub fn start_url_input(&mut self) {
-        // Legacy: pre-fill from first calendar URL if any
-        self.url_input = self.config.calendars.first().map(|c| c.url.clone()).unwrap_or_default();
-        self.input_mode = InputMode::EnteringUrl;
-    }
-
-    pub fn confirm_url_input(&mut self) {
-        self.input_mode = InputMode::Normal;
-        let url = self.url_input.trim().to_string();
-        if url.is_empty() {
-            self.config.calendars.clear();
-            self.status = String::from("URL cleared");
-        } else {
-            // Quick format-only check (no network I/O — actual fetch happens async in start_reload)
-            let after = if url.starts_with("https://") { &url[8..] } else { &url[7..] };
-            if (!url.starts_with("http://") && !url.starts_with("https://"))
-                || after.is_empty() || after.starts_with('/')
-            {
-                self.set_error("URL must start with http:// or https:// and include a hostname".into());
-                return;
-            }
-            if self.config.calendars.is_empty() {
-                self.config.calendars.push(CalendarEntry {
-                    name: "Calendar".into(),
-                    url,
-                    color: "blue".into(),
-                    enabled: true,
-                    cal_type: CalType::Ics,
-                    google_account: None,
-                    calendar_id: None,
-                    access_role: None,
-                });
-            } else {
-                self.config.calendars[0].url = url;
-            }
-            if let Err(e) = save_config(&self.config) {
-                self.set_error(format!("Failed to save config: {e}"));
-                return;
-            }
-            self.start_reload();
-        }
-    }
-
-    pub fn cancel_url_input(&mut self) {
-        self.input_mode = InputMode::Normal;
-        self.url_input.clear();
-        self.status = String::from("Cancelled");
-    }
-
     pub fn start_reload(&mut self) {
         let enabled: Vec<(usize, CalendarEntry)> = self.config.calendars.iter().enumerate()
             .filter(|(_, c)| c.enabled)
@@ -336,11 +284,13 @@ impl App {
                 }
                 Ok(AppMsg::CrudError(e)) => {
                     self.set_error(e);
+                    self.loading = false;
                     self.start_reload();
                 }
                 Ok(AppMsg::CalendarAdded(entry)) => {
                     self.config.calendars.push(entry);
                     let _ = save_config(&self.config);
+                    self.loading = false;
                     self.start_reload();
                 }
                 Err(_) => break,
@@ -1283,46 +1233,6 @@ mod tests {
         app.close_popup();
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.popup.is_none());
-    }
-
-    // ── URL input ────────────────────────────────────────────────────────
-
-    #[test]
-    fn start_url_input_enters_mode() {
-        let mut app = make_app();
-        app.start_url_input();
-        assert_eq!(app.input_mode, InputMode::EnteringUrl);
-    }
-
-    #[test]
-    fn start_url_input_prefills_existing() {
-        let config = Config {
-            ics_url: None,
-            calendars: vec![CalendarEntry {
-                name: "Test".into(),
-                url: "https://cal.test".into(),
-                color: "blue".into(),
-                enabled: true,
-                cal_type: CalType::Ics,
-                google_account: None,
-                calendar_id: None,
-                access_role: None,
-            }],
-        };
-        let mut app = App::new(config);
-        app.start_url_input();
-        assert_eq!(app.url_input, "https://cal.test");
-    }
-
-    #[test]
-    fn cancel_url_input_returns_to_normal() {
-        let mut app = make_app();
-        app.start_url_input();
-        app.url_input.push_str("https://test.com");
-        app.cancel_url_input();
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.url_input.is_empty());
-        assert_eq!(app.status, "Cancelled");
     }
 
     // ── Calendar manager ─────────────────────────────────────────────────

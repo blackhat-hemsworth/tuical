@@ -1,12 +1,12 @@
 # Google Calendar Setup Guide
 
-This guide walks you through setting up Google OAuth so caltui can access your Google Calendar.
+This guide walks you through setting up Google OAuth so TUIcal can access your Google Calendar.
 
 ## 1. Create a Google Cloud Project
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
 2. Click the project dropdown at the top and select **New Project**
-3. Name it something like `caltui` and click **Create**
+3. Name it something like `TUIcal` and click **Create**
 4. Make sure the new project is selected in the dropdown
 
 ## 2. Enable the Google Calendar API
@@ -20,7 +20,7 @@ This guide walks you through setting up Google OAuth so caltui can access your G
 1. Go to **APIs & Services → OAuth consent screen**
 2. Select **External** user type (unless you have a Google Workspace org) and click **Create**
 3. Fill in the required fields:
-   - **App name:** `caltui`
+   - **App name:** `TUIcal`
    - **User support email:** your email
    - **Developer contact email:** your email
 4. Click **Save and Continue**
@@ -36,12 +36,12 @@ This guide walks you through setting up Google OAuth so caltui can access your G
 1. Go to **APIs & Services → Credentials**
 2. Click **Create Credentials → OAuth client ID**
 3. Set **Application type** to **TVs and Limited Input devices**
-   - This is required for the device code flow that caltui uses
+   - This is required for the device code flow that TUIcal uses
    - "Desktop app" will **not** work — it returns `invalid_client_type`
-4. Name it `caltui` and click **Create**
+4. Name it `TUIcal` and click **Create**
 5. Copy the **Client ID** and **Client Secret**
 
-## 5. Build caltui with Credentials
+## 5. Build TUIcal with Credentials
 
 Pass the credentials as environment variables when building:
 
@@ -65,9 +65,9 @@ GOOGLE_CLIENT_SECRET = "your-client-secret"
 
 > **Do not commit this file.** Add `.cargo/config.toml` to your `.gitignore`.
 
-## 6. Add a Google Calendar in caltui
+## 6. Add a Google Calendar in TUIcal
 
-1. Launch `caltui`
+1. Launch `TUIcal`
 2. Press `c` to open the Calendar Manager
 3. Press `a` to add a calendar
 4. Press `2` or `g` to select **Google Calendar**
@@ -79,7 +79,7 @@ GOOGLE_CLIENT_SECRET = "your-client-secret"
 
 ## Token Storage
 
-OAuth tokens are saved to `~/.config/caltui/tokens.json` (or `$XDG_CONFIG_HOME/caltui/tokens.json`) with `0600` permissions. Tokens refresh automatically when they expire. To revoke access, delete `tokens.json` or revoke the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+OAuth tokens are saved to `~/.config/TUIcal/tokens.json` (or `$XDG_CONFIG_HOME/TUIcal/tokens.json`) with `0600` permissions. Tokens refresh automatically when they expire. To revoke access, delete `tokens.json` or revoke the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
 ## Troubleshooting
 
